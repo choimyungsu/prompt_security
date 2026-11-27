@@ -1,12 +1,17 @@
 import { Hono } from 'hono'
-import { renderer } from './renderer'
+import api from './routes/api'
+import { renderPage } from './lib/page'
 
-const app = new Hono()
+type Bindings = { DB?: D1Database }
 
-app.use(renderer)
+const app = new Hono<{ Bindings: Bindings }>()
 
-app.get('/', (c) => {
-  return c.render(<h1>Hello!</h1>)
-})
+/* API 라우트 */
+app.route('/api', api)
+
+/* 메인 화면 (public/static 정적 자산은 Cloudflare Pages 가 자동 서빙) */
+app.get('/', (c) => c.html(renderPage()))
+
+app.get('/health', (c) => c.json({ ok: true, app: 'security-word-analyzer' }))
 
 export default app

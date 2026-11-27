@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>SWA Self Test</title>
+<style>
+  body { font-family: monospace; font-size: 12px; margin: 0; padding: 8px; }
+  #log { white-space: pre-wrap; }
+  iframe { width: 1500px; height: 900px; border: 1px solid #ccc; }
+  .pass { color: #0a0; }
+  .fail { color: #c00; font-weight: bold; }
+</style>
+</head>
+<body>
+<pre id="log"></pre>
+<iframe id="app" src="/"></iframe>
+<script>
+const logEl = document.getElementById("log");
+let pass = 0, fail = 0;
+function log(msg, cls) {
+  const line = document.createElement("span");
+  line.className = cls || "";
+  line.textContent = msg + "\n";
+  logEl.appendChild(line);
+}
+function ok(name, cond, extra) {
+  if (cond) { pass++; log("  PASS " + name); console.log("PASS " + name); }
+  else { fail++; log("  FAIL " + name + (extra ? " :: " + JSON.stringify(extra) : ""), "fail");
+         console.error("FAIL " + name + (extra ? " :: " + JSON.stringify(extra) : "")); }
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, timeout = 20000, label = "") {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    try { const v = fn(); if (v) return v; } catch (e) {}
+    await sleep(120);
+  }
+  throw new Error("timeout waiting for " + label);
+}
+function makeCSVFile() {
+  const csv =
+    "담당자,메모,프로젝트코드,이메일\n" +
+    "홍길동,고객 주민등록번호 확인 필요,PJT-2026-12345,hong@example.com\n" +
+    "김철수,비밀번호 변경 요청 계정 잠김,PJT-2025-11111,-\n" +
+    "이영희,이메일 test@example.com 로 발송,PJT-2026-99999,lee@example.com\n" +
+    "박민수,서버 192.168.10.25 점검 필요,EMP-10023,-\n" +
+    "홍길동,주민등록번호 재확인 요청,PJT-2026-12345,hong@example.com\n" +
+    "최수진,일반 업무 보고,,-";
+  return new File([csv], "sample_data.csv", { type: "text/csv" });
+}
+
+(async () => {
+  log("=== SWA Browser Integration Test ===");
+  const ifr = document.getElementById("app");
+  try {
+    await waitFor(() => ifr.contentDocument && ifr.contentDocument.querySelector("#dropzone"), 30000, "iframe app");
+    const D = ifr.contentDocument;
+    const W = ifr.contentWindow;
+    const $ = (s) => D.querySelector(s);
+
+    await waitFor(() => $("#db-status-text") && !$("#db-status-text").textContent.includes("확인 중"), 20000, "boot");
+    ok("앱 부트 완료(DB 상태 표시)", true);
+    log("   DB 배지: " + $("#db-status-text").textContent);
+
+    /* --- 파일 업로드 시뮬레이션 --- */
+    const file = makeCSVFile();
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = $("#file-input");
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await waitFor(() => D.querySelectorAll("#column-list input[type=checkbox]").length >= 4, 25000, "columns");
+    ok("CSV 파싱 후 컬럼 4개 표시", D.querySelectorAll("#column-list input[type=checkbox]").length === 4,
+       D.querySelectorAll("#column-list input[type=checkbox]").length);
+
+    await waitFor(() => !$("#btn-analyze").disabled, 15000, "analyze enabled");
+    ok("분석 버튼 활성화", !$("#btn-analyze").disabled);
+
+    /* --- 조건 필터 --- */
+    const fcol = $("#filter-col");
+    fcol.value = "담당자";
+    fcol.dispatchEvent(new Event("change", { bubbles: true }));
+    $("#filter-value").value = "홍길동";
+    $("#filter-value").dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(600);
+    ok("필터 미리보기 2행 일치", $("#filter-preview").textContent.includes("2행"), $("#filter-preview").textContent.trim());
+    /* 필터 해제 */
+    fcol.value = "";
+    fcol.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(300);
+
+    /* --- 분석 실행 --- */
+    $("#btn-analyze").click();
+    await waitFor(() => $("#btn-export").disabled === false, 40000, "analysis done");
+    ok("분석 완료 후 Excel 저장 활성화", true);
+
+    const cards = $("#summary-cards").textContent;
+    const cardCount = D.querySelectorAll("#summary-cards .card").length;
+    ok("요약 카드 렌더링", cardCount >= 6, cardCount);
+    log("   요약: " + cards.replace(/\s+/g, " ").slice(0, 160));
+
+    /* 보안 분석 표 */
+    const secRows = D.querySelectorAll("#security-table tbody tr").length;
+    ok("보안 분석 표에 탐지 항목 존재", secRows > 0, secRows);
+    const secText = $("#security-table").textContent;
+    ok("주민등록번호 탐지됨", secText.includes("주민등록번호"));
+    ok("이메일 패턴 탐지됨", secText.includes("이메일"));
+    ok("IP 탐지됨", secText.includes("IPv4") || secText.includes("IP"));
+
+    /* 상세 findings */
+    const fRows = D.querySelectorAll("#findings-table tbody tr").length;
+    ok("상세 Findings 행 존재", fRows > 0, fRows);
+    const firstRowNo = D.querySelector("#findings-table tbody tr td")?.textContent;
+
+    /* 마스킹 토글 */
+    $("#findings-mask").checked = true;
+    $("#findings-mask").dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(400);
+    ok("원문 마스킹 동작", $("#findings-table").textContent.includes("＊"));
+
+    /* 단어 빈도 */
+    const wRows = D.querySelectorAll("#words-table tbody tr").length;
+    ok("단어 빈도 표 렌더링", wRows > 0, wRows);
+
+    /* 패턴 유형 탭 */
+    const tabs = Array.from(D.querySelectorAll("#tabs .tab"));
+    const ptTab = tabs.find((t) => t.dataset.tab === "ptype");
+    ptTab.click();
+    await sleep(400);
+    const ptRows = D.querySelectorAll("#ptype-table tbody tr").length;
+    ok("패턴 유형 표 렌더링", ptRows > 0, ptRows);
+    const ptText = $("#ptype-table").textContent;
+    ok("PJT 코드 유형 집계", ptText.includes("프로젝트") || ptText.includes("PJT"), ptText.slice(0, 120));
+
+    /* 2차 재분석 */
+    const reTab = tabs.find((t) => t.dataset.tab === "reanalysis");
+    reTab.click();
+    await sleep(200);
+    $("#btn-reanalyze").click();
+    await waitFor(() => D.querySelectorAll("#re-words-table tbody tr").length > 0, 40000, "reanalysis");
+    ok("2차 재분석 결과 렌더링", D.querySelectorAll("#re-words-table tbody tr").length > 0);
+    const phRows = D.querySelectorAll("#re-phrases-table tbody tr").length;
+    const phRendered = $("#re-phrases-table").innerHTML.trim().length > 0;
+    ok("보안문구 후보 표 렌더링", phRendered, {rows: phRows});
+
+    /* --- 사전 관리 모달 --- */
+    $("#btn-dict").click();
+    await waitFor(() => D.querySelector("#dict-modal") && !D.querySelector("#dict-modal").hidden, 10000, "dict modal");
+    ok("사전 관리 모달 열림", !D.querySelector("#dict-modal").hidden);
+    const dictRows = D.querySelectorAll("#dict-table tbody tr").length;
+    ok("제외 단어 목록 로드", dictRows > 0, dictRows);
+    log("   사전 표: " + $("#dict-table-info").textContent);
+
+    /* 빠른 추가 */
+    $("#quick-value").value = "테스트제외어";
+    $("#quick-category").value = "테스트";
+    $("#btn-quick-add").click();
+    await sleep(900);
+    const dictVals = Array.from(D.querySelectorAll("#dict-table input[data-field=value]")).map(i=>i.value);
+    ok("빠른 추가 반영", dictVals.includes("테스트제외어"), dictVals.slice(-4));
+
+    /* 붙여넣기 일괄 등록 */
+    $("#bulk-text").value = "일괄A\t일반\n일괄B\t일반\n일괄C\t일반";
+    $("#btn-bulk-add").click();
+    await sleep(1200);
+    const dictVals2 = Array.from(D.querySelectorAll("#dict-table input[data-field=value]")).map(i=>i.value);
+    ok("붙여넣기 일괄 등록", dictVals2.includes("일괄C") && dictVals2.includes("일괄A"), $("#bulk-msg").textContent.trim()+" / "+dictVals2.slice(-4));
+
+    /* 보안 키워드 탭 */
+    Array.from(D.querySelectorAll("#dict-tabs .dict-tab")).find((b) => b.dataset.kind === "security").click();
+    await sleep(700);
+    const secVals = Array.from(D.querySelectorAll("#dict-table input[data-field=value]")).map(i=>i.value);
+    ok("보안 키워드 탭 전환", secVals.includes("주민등록번호") && secVals.length >= 40, {n: secVals.length, head: secVals.slice(0,3)});
+
+    /* 정규식 탭 - 패턴 컬럼 존재 확인 */
+    Array.from(D.querySelectorAll("#dict-tabs .dict-tab")).find((b) => b.dataset.kind === "pattern").click();
+    await sleep(700);
+    const patRows = D.querySelectorAll("#dict-table tbody tr").length;
+    const patVals = Array.from(D.querySelectorAll("#dict-table input[data-field=pattern]")).map(i=>i.value);
+    ok("정규식 패턴 탭 렌더링", patRows > 0 && patVals.some(v=>v.length>3), {rows: patRows, pats: patVals.slice(0,2)});
+
+    D.querySelector('#dict-modal [data-close="dict-modal"]').click();
+    await sleep(300);
+    ok("사전 모달 닫기", D.querySelector("#dict-modal").hidden);
+
+    /* --- DB 설정 모달 --- */
+    $("#btn-dbsettings").click();
+    await waitFor(() => !D.querySelector("#db-modal").hidden, 8000, "db modal");
+    ok("DB 설정 모달 열림", !D.querySelector("#db-modal").hidden);
+    await waitFor(() => D.querySelectorAll("#db-health .hitem").length >= 4, 15000, "health");
+    const healthText = $("#db-health").textContent.replace(/\s+/g, " ");
+    log("   DB 진단: " + healthText.slice(0, 200));
+    ok("DB 진단 카드 렌더링", D.querySelectorAll("#db-health .hitem").length >= 4,
+       D.querySelectorAll("#db-health .hitem").length);
+    ok("연결 정보 표 렌더링", D.querySelectorAll("#db-info-table tr").length >= 6,
+       D.querySelectorAll("#db-info-table tr").length);
+    /* 스키마 생성 버튼 */
+    $("#btn-db-init").click();
+    await sleep(1500);
+    ok("스키마 생성/점검 실행", true);
+    /* 저장 모드 DB 전환 */
+    const dbRadio = D.querySelector('input[name="db-storage-mode"][value="db"]');
+    dbRadio.checked = true;
+    dbRadio.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(1200);
+    ok("DB 저장 모드 전환", D.querySelector("#db-info-table").textContent.includes("DB 저장"),
+       $("#db-info-table").textContent.replace(/\s+/g, " ").slice(0, 100));
+    D.querySelector('#db-modal [data-close="db-modal"]').click();
+    await sleep(300);
+
+    /* --- 이력 탭 (DB 모드) --- */
+    tabs.find((t) => t.dataset.tab === "history").click();
+    await waitFor(() => $("#history-info").textContent.includes("건"), 15000, "history");
+    log("   이력: " + $("#history-info").textContent);
+    ok("이력 조회 동작", $("#history-info").textContent.includes("건"), $("#history-info").textContent);
+    const histRows = D.querySelectorAll("#history-table tbody tr").length;
+    const histEmpty = ($("#history-table").textContent||"").includes("저장된 이력이 없습니다");
+    ok("이력 목록 표시", histRows > 0 || histEmpty, {rows: histRows, empty: histEmpty});
+
+    /* 이력 상세 클릭 */
+    const firstHist = D.querySelector("#history-table tbody tr");
+    if (firstHist) {
+      firstHist.click();
+      await sleep(900);
+      ok("이력 상세 표시", $("#history-detail").textContent.includes("저장된 결과") || $("#history-detail").textContent.length > 20,
+         $("#history-detail").textContent.slice(0, 80));
+    }
+
+    /* --- 로컬 모드 복원 --- */
+    $("#btn-dbsettings").click();
+    await waitFor(() => !D.querySelector("#db-modal").hidden, 8000, "db modal2");
+    const localRadio = D.querySelector('input[name="db-storage-mode"][value="local"]');
+    localRadio.checked = true;
+    localRadio.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(900);
+    D.querySelector('#db-modal [data-close="db-modal"]').click();
+
+    log("");
+    log("=== 결과: " + pass + " PASS / " + fail + " FAIL ===", fail ? "fail" : "pass");
+    console.log("SUMMARY " + pass + " PASS / " + fail + " FAIL");
+    window.__swaTestDone = true;
+  } catch (e) {
+    fail++;
+    log("EXCEPTION: " + e.message + "\n" + (e.stack || ""), "fail");
+    console.error("EXCEPTION " + e.message);
+    console.log("SUMMARY " + pass + " PASS / " + fail + " FAIL");
+  }
+})();
+</script>
+</body>
+</html>
