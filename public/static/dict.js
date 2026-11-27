@@ -65,6 +65,17 @@ export const initDictUI = {
     this.bindOnce();
   },
 
+  /** 외부(단어 빈도 등)에서 사전을 변경했을 때 화면을 갱신한다 */
+  refresh() {
+    if (!this.dict || !this.state) return;
+    /* 모달이 열려 있을 때만 다시 그린다 */
+    const modal = document.getElementById("dict-modal");
+    if (!modal || modal.hidden) return;
+    this.dict = this.state.dict;
+    this.renderTabs();
+    this.renderTable();
+  },
+
   bindOnce() {
     if (this._bound) return;
     this._bound = true;

@@ -56,74 +56,230 @@ export function debounce(fn, ms = 220) {
 }
 
 /* --------------------------------------------------------------------------
- * 표 렌더링
- * columns: [{ key, label, type: 'num'|'text'|'risk'|'mono'|'clip'|'html', width }]
- * options: { onRowClick, rowClass, selectedIndex, maxRows, emptyText }
+ * 표 렌더링 (페이지네이션 + 컬럼 정렬)
+ *
+ * columns: [{ key, label, type:'num'|'text'|'risk'|'mono'|'clip'|'html',
+ *             width, noSort, render(row) }
+ *           ]
+ * options: { onRowClick, rowClass, rowKey, selectedKey, emptyText,
+ *            pageSize, keepScroll }
+ *
+ * · 행 수 상한으로 데이터를 잘라내지 않는다. 화면에 한 번에 그리는 양만
+ *   페이지 단위로 나눠 브라우저가 멈추지 않게 한다(끝까지 넘겨 볼 수 있음).
  * ------------------------------------------------------------------------ */
+const tableStates = new WeakMap();
+export const PAGE_SIZE_CHOICES = [100, 500, 1000, 5000, 20000, 0]; // 0 = 전체
+
+function sortValue(row, key, type) {
+  const v = row[key];
+  if (type === "risk") return RISK[v] || 0;
+  if (type === "num") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : -Infinity;
+  }
+  return String(v ?? "");
+}
+
+function compareRows(a, b, key, type) {
+  const va = sortValue(a, key, type);
+  const vb = sortValue(b, key, type);
+  if (type === "num" || type === "risk") return va - vb;
+  if (typeof va === "string" && typeof vb === "string") return va.localeCompare(vb, "ko");
+  return va < vb ? -1 : va > vb ? 1 : 0;
+}
+
+function cellHtml(row, c) {
+  if (typeof c.render === "function") {
+    return `<td${c.cls ? ` class="${c.cls}"` : ""}>${c.render(row)}</td>`;
+  }
+  const v = row[c.key];
+  if (c.type === "risk") return `<td>${riskBadge(v)}</td>`;
+  if (c.type === "num") return `<td class="num">${num(v)}</td>`;
+  if (c.type === "mono") return `<td class="mono">${escapeHtml(v ?? "")}</td>`;
+  if (c.type === "html") return `<td>${v ?? ""}</td>`;
+  if (c.type === "clip") return `<td><div class="cell-clip">${escapeHtml(v ?? "")}</div></td>`;
+  return `<td>${escapeHtml(v ?? "")}</td>`;
+}
+
+function keyOf(row, rowKey, idx) {
+  if (rowKey == null) return String(idx);
+  if (typeof rowKey === "function") return String(rowKey(row));
+  return String(row[rowKey]);
+}
+
 export function renderTable(container, rows, columns, options = {}) {
   if (!container) return;
   const {
     onRowClick = null,
     rowClass = null,
-    maxRows = 3000,
     emptyText = "결과가 없습니다.",
     keepScroll = false,
+    rowKey = null,
+    selectedKey = null,
   } = options;
 
-  const prevScroll = keepScroll ? container.scrollTop : 0;
-  const list = (rows || []).slice(0, maxRows);
-  if (!list.length) {
+  const src = rows || [];
+  let st = tableStates.get(container);
+  if (!st) {
+    st = {
+      page: 1,
+      sortKey: null,
+      sortDir: 1,
+      pageSize: options.pageSize ?? 500,
+      lastLen: -1,
+    };
+    tableStates.set(container, st);
+  }
+  /* 필터/검색으로 행 집합이 바뀌면 첫 페이지로 돌아간다 */
+  if (st.lastLen !== src.length) {
+    st.page = 1;
+    st.lastLen = src.length;
+  }
+
+  if (!src.length) {
     container.innerHTML = `<p class="empty-note">${escapeHtml(emptyText)}</p>`;
     return;
   }
 
-  const head = columns
-    .map(
-      (c) =>
-        `<th${c.width ? ` style="min-width:${c.width}px"` : ""} data-key="${escapeHtml(c.key)}">${escapeHtml(
-          c.label ?? c.key
-        )}</th>`
-    )
-    .join("");
+  const prevScroll = keepScroll ? container.scrollTop : 0;
+  /* selectedKey 는 함수일 수 있다(정렬 재렌더 시 최신 선택을 반영하기 위함) */
+  const curSelected = typeof selectedKey === "function" ? selectedKey() : selectedKey;
 
-  const body = list
-    .map((row, i) => {
-      const cls = rowClass ? rowClass(row, i) : "";
-      const tds = columns
-        .map((c) => {
-          const v = row[c.key];
-          if (c.type === "risk") return `<td>${riskBadge(v)}</td>`;
-          if (c.type === "num") return `<td class="num">${num(v)}</td>`;
-          if (c.type === "mono") return `<td class="mono">${escapeHtml(v ?? "")}</td>`;
-          if (c.type === "html") return `<td>${v ?? ""}</td>`;
-          if (c.type === "clip") return `<td><div class="cell-clip">${escapeHtml(v ?? "")}</div></td>`;
-          return `<td>${escapeHtml(v ?? "")}</td>`;
-        })
-        .join("");
-      return `<tr class="${cls}" data-idx="${i}">${tds}</tr>`;
+  /* ---- 정렬 ---- */
+  const sorted = src.slice();
+  if (st.sortKey) {
+    const col = columns.find((c) => c.key === st.sortKey);
+    const type = col ? col.type : "text";
+    sorted.sort((a, b) => compareRows(a, b, st.sortKey, type) * st.sortDir);
+  }
+
+  /* ---- 페이지 계산 ---- */
+  const total = sorted.length;
+  const size = st.pageSize;
+  const pages = size > 0 ? Math.max(1, Math.ceil(total / size)) : 1;
+  if (st.page > pages) st.page = pages;
+  if (st.page < 1) st.page = 1;
+  const start = size > 0 ? (st.page - 1) * size : 0;
+  const list = size > 0 ? sorted.slice(start, start + size) : sorted;
+
+  /* ---- 헤더 ---- */
+  const head = columns
+    .map((c) => {
+      const width = c.width ? ` style="min-width:${c.width}px"` : "";
+      const label = escapeHtml(c.label ?? c.key);
+      if (c.noSort) return `<th${width} data-key="${escapeHtml(c.key)}">${label}</th>`;
+      const active = st.sortKey === c.key;
+      const arrow = active ? (st.sortDir > 0 ? " ▲" : " ▼") : "";
+      return `<th class="sortable${active ? " sorted" : ""}"${width} data-skey="${escapeHtml(
+        c.key
+      )}" title="클릭하여 정렬">${label}${arrow}</th>`;
     })
     .join("");
 
-  container.innerHTML = `<table class="data"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  /* ---- 본문 ---- */
+  const body = list
+    .map((row, i) => {
+      const absIdx = start + i;
+      const cls = rowClass ? rowClass(row, absIdx) : "";
+      const sel = curSelected != null && keyOf(row, rowKey, absIdx) === String(curSelected);
+      const tds = columns.map((c) => cellHtml(row, c)).join("");
+      return `<tr class="${cls}${sel ? " selected" : ""}" data-idx="${absIdx}" data-key="${escapeHtml(
+        keyOf(row, rowKey, absIdx)
+      )}">${tds}</tr>`;
+    })
+    .join("");
 
-  if (list.length >= maxRows) {
-    const note = document.createElement("p");
-    note.className = "empty-note";
-    note.textContent = `표시 상한 ${maxRows.toLocaleString()}행까지 표시했습니다. (전체 ${rows.length.toLocaleString()}행 · CSV 저장 시 전체 포함)`;
-    container.appendChild(note);
+  const sizeOptions = PAGE_SIZE_CHOICES.map(
+    (n) =>
+      `<option value="${n}"${n === size ? " selected" : ""}>${
+        n === 0 ? "전체" : `${n.toLocaleString()}행`
+      }</option>`
+  ).join("");
+
+  const pager =
+    `<div class="table-pager">` +
+    `<span class="pager-info">전체 <b>${total.toLocaleString()}</b>행` +
+    (pages > 1
+      ? ` · <b>${st.page.toLocaleString()}</b>/${pages.toLocaleString()}쪽`
+      : "") +
+    `</span>` +
+    `<span class="pager-actions">` +
+    `<button class="btn btn-mini" data-pg="first" type="button"${st.page <= 1 ? " disabled" : ""}>«</button>` +
+    `<button class="btn btn-mini" data-pg="prev" type="button"${st.page <= 1 ? " disabled" : ""}>‹</button>` +
+    `<button class="btn btn-mini" data-pg="next" type="button"${
+      st.page >= pages ? " disabled" : ""
+    }>›</button>` +
+    `<button class="btn btn-mini" data-pg="last" type="button"${
+      st.page >= pages ? " disabled" : ""
+    }>»</button>` +
+    `<select class="mini-input" data-pg-size title="한 쪽에 표시할 행 수">${sizeOptions}</select>` +
+    `</span>` +
+    `</div>`;
+
+  container.innerHTML =
+    `<table class="data"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>` + pager;
+
+  /* ---- 정렬 클릭 ---- */
+  container.querySelectorAll("thead th[data-skey]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const k = th.dataset.skey;
+      if (st.sortKey === k) {
+        /* 오름 → 내림 → 정렬해제 */
+        st.sortDir = st.sortDir > 0 ? -1 : 0;
+        if (st.sortDir === 0) st.sortKey = null;
+      } else {
+        st.sortKey = k;
+        st.sortDir = 1;
+      }
+      renderTable(container, rows, columns, { ...options, keepScroll: true });
+    });
+  });
+
+  /* ---- 페이지 이동 ---- */
+  container.querySelectorAll("[data-pg]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const act = btn.dataset.pg;
+      const target =
+        act === "first"
+          ? 1
+          : act === "prev"
+          ? st.page - 1
+          : act === "next"
+          ? st.page + 1
+          : pages;
+      const next = Math.min(Math.max(1, target), pages);
+      if (next === st.page) return;
+      st.page = next;
+      renderTable(container, rows, columns, options);
+      container.scrollTop = 0;
+    });
+  });
+  const sizeSel = container.querySelector("[data-pg-size]");
+  if (sizeSel) {
+    sizeSel.addEventListener("change", () => {
+      st.pageSize = Number(sizeSel.value);
+      st.page = 1;
+      renderTable(container, rows, columns, options);
+      container.scrollTop = 0;
+    });
   }
 
+  /* ---- 행 클릭 ---- */
   if (onRowClick) {
     container.querySelectorAll("tbody tr").forEach((tr) => {
-      tr.addEventListener("click", () => {
+      tr.addEventListener("click", (e) => {
+        /* 행 안의 버튼/체크박스 클릭은 행 선택으로 처리하지 않는다 */
+        if (e.target.closest("button, input, select, a, label")) return;
+        const idx = Number(tr.dataset.idx);
         container.querySelectorAll("tbody tr.selected").forEach((x) => x.classList.remove("selected"));
         tr.classList.add("selected");
-        onRowClick(list[Number(tr.dataset.idx)], Number(tr.dataset.idx));
+        onRowClick(sorted[idx], idx);
       });
     });
   }
   if (keepScroll) container.scrollTop = prevScroll;
 }
+
 
 export function tableToCSV(rows, columns) {
   const esc = (v) => {

@@ -230,9 +230,9 @@ export function guessShapeMeta(tok) {
 export class PatternTypeIndex {
   constructor() {
     this.groups = new Map();
-    this.MAX_VALUES = 1000;
-    this.MAX_ROWS_PER_VALUE = 500;
-    this.MAX_COLS_PER_VALUE = 200;
+    /* 값·행·열을 더 이상 잘라내지 않는다.
+       (예전에는 유형당 값 1000개 / 값당 행 500개 / 값당 열 200개에서 잘려
+        고유값·행수·포함열이 실제보다 작게 집계되었다) */
   }
   _group(key, name, cat, risk, source, pattern) {
     let g = this.groups.get(key);
@@ -259,27 +259,27 @@ export class PatternTypeIndex {
     g.총출현++;
     g.rows.add(rownum);
     g.cols.add(String(col));
-    if (g.values.has(tok) || g.values.size < this.MAX_VALUES) {
-      g.values.set(tok, (g.values.get(tok) || 0) + 1);
-    } else {
-      g.overflow++;
-    }
+    g.values.set(tok, (g.values.get(tok) || 0) + 1);
     let rs = g.valueRows.get(tok);
     if (!rs) { rs = new Set(); g.valueRows.set(tok, rs); }
-    if (rs.size < this.MAX_ROWS_PER_VALUE) rs.add(rownum);
+    rs.add(rownum);
     let cs = g.valueCols.get(tok);
     if (!cs) { cs = new Set(); g.valueCols.set(tok, cs); }
-    if (cs.size < this.MAX_COLS_PER_VALUE) cs.add(String(col));
+    cs.add(String(col));
   }
-  result(minCount = 2, minValues = 1, maxVariants = 200) {
+  /** @param {number} maxVariants 0 이하이면 유형당 모든 변형 값을 반환한다 */
+  result(minCount = 2, minValues = 1, maxVariants = 0) {
     const types = [];
     const variants = {};
     const stats = { 유형수: 0, 자동형태유형수: 0, 보관값수: 0, 누락값수: 0, 총일치건수: 0 };
+    const limit = Number(maxVariants) > 0 ? Number(maxVariants) : Infinity;
     for (const [key, g] of this.groups) {
       const uniq = g.values.size;
       if (g.총출현 < minCount || uniq < minValues) continue;
-      const top = [...g.values.entries()].sort((a, b) => b[1] - a[1]).slice(0, maxVariants);
-      const sampleTop = top.slice(0, 3).map((v) => v[0]);
+      const all = [...g.values.entries()].sort((a, b) => b[1] - a[1]
+        || a[0].localeCompare(b[0], "ko"));
+      const top = limit === Infinity ? all : all.slice(0, limit);
+      const sampleTop = all.slice(0, 3).map((v) => v[0]);
       types.push({
         유형: g.유형, 분류: g.분류, 위험도: g.위험도, 탐지방식: g.탐지방식,
         패턴: g.패턴, 고유값수: uniq, 총출현: g.총출현,
@@ -475,7 +475,8 @@ export async function analyze(input) {
 
   let pt = { types: [], variants: {}, stats: { 유형수: 0, 자동형태유형수: 0, 보관값수: 0, 누락값수: 0 } };
   if (index) {
-    pt = index.result(1, 1, 200);
+    /* 1차 분석에서는 값을 잘라내지 않고 전부 보관한다 */
+    pt = index.result(1, 1, 0);
     summary.패턴유형수 = pt.stats.유형수;
     summary.패턴유형_서로다른값수 = pt.stats.보관값수;
   }
@@ -592,7 +593,8 @@ export async function reanalyze(input) {
 /* -------------------------------------------------------------------------- */
 export async function analyzePatternTypes(input) {
   const {
-    rows, columns, dict, minCount = 2, minValues = 1, maxVariants = 200, rowNumbers = null,
+    /* maxVariants 0 = 유형당 모든 변형 값을 반환(절단 없음) */
+    rows, columns, dict, minCount = 2, minValues = 1, maxVariants = 0, rowNumbers = null,
     onProgress = () => {},
   } = input;
 

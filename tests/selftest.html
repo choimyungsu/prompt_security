@@ -123,6 +123,59 @@ function makeCSVFile() {
     const wRows = D.querySelectorAll("#words-table tbody tr").length;
     ok("단어 빈도 표 렌더링", wRows > 0, wRows);
 
+    /* --- 표 페이지 이동 바 (행 수 상한 대신 페이지네이션) --- */
+    ok("페이지 이동 바 존재", !!$("#words-table .table-pager"), $("#words-table").textContent.slice(0, 80));
+    const pagerInfo = $("#words-table .pager-info")?.textContent || "";
+    ok("전체 행수 표시", /전체/.test(pagerInfo), pagerInfo);
+    ok("쪽당 행수 선택 존재", !!$("#words-table [data-pg-size]"));
+    const pageSizeOpts = Array.from($("#words-table [data-pg-size]").options).map((o) => o.textContent);
+    ok("쪽당 '전체' 옵션 제공", pageSizeOpts.includes("전체"), pageSizeOpts);
+
+    /* --- 컬럼 정렬 --- */
+    const sortableThs = Array.from(D.querySelectorAll("#words-table thead th.sortable"));
+    ok("정렬 가능한 헤더 존재", sortableThs.length >= 3, sortableThs.length);
+    /* 재렌더 때마다 th 가 새로 만들어지므로 매번 다시 찾는다 */
+    const findFreqTh = () =>
+      Array.from(D.querySelectorAll("#words-table thead th.sortable")).find((th) =>
+        th.textContent.includes("빈도")
+      );
+    findFreqTh().click();
+    await sleep(400);
+    ok("빈도 헤더 클릭 시 정렬 표시",
+       /▲|▼/.test(findFreqTh().textContent), findFreqTh().textContent);
+    const firstFreqAsc = Number(D.querySelector("#words-table tbody tr td:nth-child(4)").textContent.replace(/,/g, ""));
+    findFreqTh().click();
+    await sleep(400);
+    const firstFreqDesc = Number(D.querySelector("#words-table tbody tr td:nth-child(4)").textContent.replace(/,/g, ""));
+    ok("정렬 방향 전환 동작", firstFreqDesc >= firstFreqAsc, {asc: firstFreqAsc, desc: firstFreqDesc});
+
+    /* --- 단어 빈도 → 제외 단어 직접 이동 --- */
+    const targetWord = D.querySelector("#words-table tbody tr td:nth-child(3)").textContent.trim();
+    ok("행별 제외 버튼 존재", !!D.querySelector("#words-table tbody tr .word-exclude"));
+    D.querySelector("#words-table tbody tr .word-exclude").click();
+    await waitFor(
+      () => !Array.from(D.querySelectorAll("#words-table tbody tr td:nth-child(3)"))
+        .some((td) => td.textContent.trim() === targetWord),
+      20000, "exclude applied"
+    );
+    ok("제외 등록 즉시 목록에서 사라짐", true, targetWord);
+    ok("제외 안내 문구 표시", $("#words-info").textContent.includes("제외 단어"), $("#words-info").textContent);
+    ok("되돌리기 버튼 노출", !$("#btn-words-undo").hidden);
+
+    /* 사전에도 등록되었는지 확인 */
+    $("#btn-dict").click();
+    await waitFor(() => !D.querySelector("#dict-modal").hidden, 8000, "dict modal (exclude)");
+    const stopVals = Array.from(D.querySelectorAll("#dict-table input[data-field=value]")).map((i) => i.value);
+    ok("제외 단어가 사전에 등록됨", stopVals.includes(targetWord), {target: targetWord, found: stopVals.includes(targetWord)});
+    D.querySelector('#dict-modal [data-close="dict-modal"]').click();
+    await sleep(300);
+
+    /* 되돌리기 */
+    $("#btn-words-undo").click();
+    await waitFor(() => Array.from(D.querySelectorAll("#words-table tbody tr td:nth-child(3)"))
+      .some((td) => td.textContent.trim() === targetWord), 20000, "undo exclude");
+    ok("제외 되돌리기 동작", true, targetWord);
+
     /* --- 입력 패널 접기/펼치기 --- */
     const layoutEl = D.querySelector(".layout");
     const panelIn = $("#panel-input");

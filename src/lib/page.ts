@@ -165,8 +165,14 @@ export function renderPage(): string {
             <option value="alpha">가나다순</option>
           </select>
           <span id="words-info" class="hint-inline"></span>
+          <button id="btn-words-exclude-sel" class="btn btn-mini btn-danger" type="button"
+            title="체크한 단어를 제외 단어 사전에 등록">⊘ 선택 제외</button>
+          <button id="btn-words-undo" class="btn btn-mini btn-ghost" type="button"
+            title="이번 세션에서 제외한 단어를 되돌립니다" hidden>↺ 제외 되돌리기</button>
+          <button id="btn-words-clear-sel" class="btn btn-mini" type="button" title="선택 해제">선택 해제</button>
           <button id="btn-words-csv" class="btn btn-mini" type="button">CSV</button>
         </div>
+        <p class="hint-block">단어 오른쪽 <strong>⊘</strong> 버튼을 누르면 그 자리에서 <strong>제외 단어</strong>로 등록되고 목록에서 즉시 빠집니다.</p>
         <div id="words-table" class="table-wrap"></div>
       </div>
 
@@ -227,7 +233,7 @@ export function renderPage(): string {
         <div class="toolbar wrap">
           <label class="mini-field">유형 최소 총출현 <input id="pt-mincount" type="number" min="1" value="2" /></label>
           <label class="mini-field">유형 최소 고유값 <input id="pt-minvalues" type="number" min="1" value="1" /></label>
-          <label class="mini-field">유형당 표시 변형 <input id="pt-maxvariants" type="number" min="1" value="200" /></label>
+          <label class="mini-field">유형당 표시 변형 <input id="pt-maxvariants" type="number" min="0" value="0" title="0 = 전체 표시" /></label>
           <label class="check"><input id="pt-auto" type="checkbox" checked /> 사전에 없는 값도 자동형태로 묶기</label>
           <button id="btn-ptype" class="btn btn-secondary btn-mini" type="button" disabled>🧩 패턴 유형 분석</button>
         </div>

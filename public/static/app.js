@@ -39,6 +39,7 @@ export const state = {
   reResult: null,
   ptResult: null,
   ptTypesData: [],
+  ptSelectedKey: null,
   dict: { stopword: [], security: [], pattern: [], pattern_type: [] },
   running: false,
 };
@@ -51,6 +52,7 @@ function cacheEls() {
     "opt-space", "opt-ptype", "opt-persist", "persist-wrap", "btn-analyze", "btn-export",
     "btn-export-csv", "btn-save-db", "progress-bar", "status-text", "summary-cards",
     "summary-table", "risk-bars", "words-search", "words-sort", "words-info", "words-table",
+    "btn-words-exclude-sel", "btn-words-clear-sel", "btn-words-undo",
     "security-search", "security-risk", "security-info", "security-table", "findings-search",
     "findings-method", "findings-mask", "findings-info", "findings-table", "re-minfreq",
     "re-minlen", "re-phrasefreq", "re-particles", "re-num", "re-eng", "btn-reanalyze",
@@ -455,34 +457,170 @@ function renderSummary() {
 }
 
 /* --------------------------------------------------------------------------
- * 렌더링: 단어 빈도
+ * 렌더링: 단어 빈도 (+ 제외 단어로 바로 넘기기)
  * ------------------------------------------------------------------------ */
+/** 이번 세션에서 제외한 단어(되돌리기용) */
+const excludedThisSession = [];
+
+/** 현재 사전에 등록된 제외 단어 집합 */
+function stopwordSet() {
+  return new Set(
+    (state.dict?.stopword || []).map((x) => String(x.value ?? "").trim()).filter(Boolean)
+  );
+}
+
 function renderWords() {
   const r = state.result;
   if (!r) {
     els["words-table"].innerHTML = `<p class="empty-note">분석 결과가 없습니다.</p>`;
     els["words-info"].textContent = "";
+    syncExcludeButtons();
     return;
   }
   const q = (els["words-search"].value || "").trim().toLowerCase();
   const sort = els["words-sort"].value;
   const minFreq = Number(els["opt-minfreq"].value) || 1;
+  const stops = stopwordSet();
 
   let rows = r.words.filter((w) => w.빈도 >= minFreq);
+  /* 제외 단어 사전에 있으면 표시하지 않는다(제외 등록 즉시 목록에서 사라짐) */
+  rows = rows.filter((w) => !stops.has(String(w.단어)));
   if (q) rows = rows.filter((w) => String(w.단어).toLowerCase().includes(q));
   if (sort === "freq") rows.sort((a, b) => b.빈도 - a.빈도 || String(a.단어).localeCompare(String(b.단어)));
   else if (sort === "row") rows.sort((a, b) => b.행수 - a.행수 || b.빈도 - a.빈도);
   else rows.sort((a, b) => String(a.단어).localeCompare(String(b.단어), "ko"));
 
-  els["words-info"].textContent = `${rows.length.toLocaleString()}개 단어`;
-  renderTable(els["words-table"], rows, [
-    { key: "순위", label: "#", type: "num", width: 50 },
-    { key: "단어", label: "단어", width: 160 },
-    { key: "빈도", label: "빈도", type: "num", width: 70 },
-    { key: "행수", label: "행수", type: "num", width: 70 },
-    { key: "포함열", label: "포함 열", type: "clip" },
-    { key: "행", label: "행 번호", type: "clip" },
-  ]);
+  const hidden = r.words.length - rows.length;
+  els["words-info"].textContent =
+    `${rows.length.toLocaleString()}개 단어` + (hidden > 0 ? ` (제외 단어 ${UI.num(hidden)}개 숨김)` : "");
+  syncExcludeButtons();
+
+  const display = rows.map((w, i) => ({ ...w, 순위: i + 1 }));
+
+  renderTable(
+    els["words-table"],
+    display,
+    [
+      {
+        key: "_chk",
+        label: "",
+        width: 34,
+        noSort: true,
+        render: (row) =>
+          `<input type="checkbox" class="word-chk" data-word="${UI.escapeHtml(row.단어)}" title="선택하여 한번에 제외" />`,
+      },
+      { key: "순위", label: "#", type: "num", width: 50 },
+      { key: "단어", label: "단어", width: 170 },
+      { key: "빈도", label: "빈도", type: "num", width: 70 },
+      { key: "행수", label: "행수", type: "num", width: 70 },
+      { key: "포함열", label: "포함 열", type: "clip" },
+      { key: "행", label: "행 번호", type: "clip" },
+      {
+        key: "_act",
+        label: "",
+        width: 62,
+        noSort: true,
+        render: (row) =>
+          `<button class="btn btn-mini btn-danger word-exclude" data-word="${UI.escapeHtml(
+            row.단어
+          )}" type="button" title="이 단어를 제외 단어로 등록">⊘ 제외</button>`,
+      },
+    ],
+    { pageSize: 500, keepScroll: true }
+  );
+
+  /* 제외 버튼 — 표를 다시 그려도 살아있도록 위임 방식 사용 */
+  if (!state._wordsDelegated) {
+    state._wordsDelegated = true;
+    els["words-table"].addEventListener("click", (e) => {
+      const btn = e.target.closest(".word-exclude");
+      if (!btn) return;
+      e.stopPropagation();
+      excludeWords([btn.dataset.word]);
+    });
+  }
+}
+
+/** 단어들을 제외 단어 사전에 등록하고 목록을 즉시 갱신한다 */
+async function excludeWords(words) {
+  const list = [...new Set((words || []).map((w) => String(w ?? "").trim()).filter(Boolean))];
+  if (!list.length) return toast("제외할 단어를 선택하세요.", "err");
+
+  const stops = stopwordSet();
+  const targets = list.filter((w) => !stops.has(w));
+  if (!targets.length) {
+    toast("이미 제외 단어에 등록되어 있습니다.", "err");
+    return;
+  }
+
+  const items = targets.map((value) => ({
+    value,
+    pattern: "",
+    category: "사용자 제외",
+    risk: "",
+    note: "단어 빈도에서 바로 제외",
+  }));
+
+  try {
+    await state.store.bulkAdd(state.dict, "stopword", items, false);
+    /* 저장 경로(로컬/DB)와 무관하게 화면 사전에도 즉시 반영한다 */
+    const after = stopwordSet();
+    const missing = targets.filter((w) => !after.has(w));
+    if (missing.length) {
+      for (const w of missing) {
+        state.dict.stopword.push({
+          id: `Lstopword-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          value: w,
+          pattern: "",
+          category: "사용자 제외",
+          risk: "",
+          note: "단어 빈도에서 바로 제외",
+          enabled: 1,
+          source: "user",
+        });
+      }
+    }
+    excludedThisSession.push(...targets);
+    /* 사전 화면이 열려 있으면 즉시 반영 */
+    initDictUI.refresh?.();
+    renderWords();
+    toast(`${targets.length}개 단어를 제외 단어로 등록했습니다.`, "ok");
+  } catch (e) {
+    console.error(e);
+    toast("제외 등록 실패: " + e.message, "err", 5000);
+  }
+}
+
+/** 선택 제외 버튼 상태 동기화 */
+function syncExcludeButtons() {
+  if (!els["btn-words-undo"]) return;
+  els["btn-words-undo"].hidden = excludedThisSession.length === 0;
+  if (els["btn-words-undo"] && !els["btn-words-undo"].hidden) {
+    els["btn-words-undo"].textContent = `↺ 제외 되돌리기 (${excludedThisSession.length})`;
+  }
+}
+
+/** 이번 세션에서 제외한 단어를 사전에서 다시 제거(되돌리기) */
+async function undoExcludes() {
+  if (!excludedThisSession.length) return;
+  const ids = (state.dict?.stopword || [])
+    .filter((x) => excludedThisSession.includes(String(x.value)))
+    .map((x) => x.id);
+  if (!ids.length) {
+    excludedThisSession.length = 0;
+    renderWords();
+    return;
+  }
+  try {
+    await state.store.deleteItems(state.dict, "stopword", ids);
+    const n = excludedThisSession.length;
+    excludedThisSession.length = 0;
+    initDictUI.refresh?.();
+    renderWords();
+    toast(`${n}개 제외를 되돌렸습니다.`, "ok");
+  } catch (e) {
+    toast("되돌리기 실패: " + e.message, "err", 5000);
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -554,7 +692,7 @@ function renderFindings() {
   if (method) rows = rows.filter((f) => f.탐지방식 === method);
 
   els["findings-info"].textContent = `${rows.length.toLocaleString()}건`;
-  const view = rows.slice(0, 3000).map((f) => ({
+  const view = rows.map((f) => ({
     ...f,
     원문: mask ? UI.maskText(f.원문) : f.원문,
   }));
@@ -573,7 +711,7 @@ function renderFindings() {
       { key: "원문", label: "원문", type: "clip", width: 260 },
     ],
     {
-      maxRows: 3000,
+      pageSize: 500,
       rowClass: (row) => {
         const lv = RISK[row.위험도] || 0;
         return lv >= 4 ? `row-risk-${lv}` : "";
@@ -612,7 +750,7 @@ function renderReanalysis() {
       { key: "포함열", label: "포함 열", type: "clip" },
     ],
     {
-      maxRows: 2000,
+      pageSize: 500,
       rowClass: (row) =>
         row.판정 === "높음" || row.분류 === "보안 키워드"
           ? "row-secure"
@@ -681,9 +819,9 @@ function renderPatternTypes() {
     `유형 ${UI.num(st.유형수)}개 (자동형태 ${UI.num(st.자동형태유형수)}개)${autoOn ? "" : " · 자동형태 제외됨"} / ` +
     `보관된 서로 다른 값 ${UI.num(st.보관값수)}개 · 총 일치 ${UI.num(st.총일치건수 ?? sumMatch(types))}건`;
 
+  /* 표 정렬이 일어나도 원본 유형을 찾을 수 있도록 _key 는 남겨 둔다 */
   const display = types.map((t) => {
     const o = { ...t };
-    delete o._key;
     delete o.샘플들;
     return o;
   });
@@ -703,20 +841,26 @@ function renderPatternTypes() {
       { key: "행수", label: "행수", type: "num", width: 65 },
     ],
     {
-      maxRows: 2000,
+      pageSize: 200,
+      rowKey: "_key",
+      selectedKey: state.ptSelectedKey ?? null,
       rowClass: (row) => {
         const lv = RISK[row.위험도] || 0;
         return lv >= 4 ? `row-risk-${lv}` : lv === 3 ? "row-risk-3" : "";
       },
-      onRowClick: (row, idx) => showPtVariants(types[idx]),
+      onRowClick: (row) => {
+        state.ptSelectedKey = row._key;
+        showPtVariants(row);
+      },
     }
   );
 
-  /* 첫 행을 선택 상태로 표시 */
-  const firstRow = els["ptype-table"].querySelector("tbody tr");
-  if (firstRow) firstRow.classList.add("selected");
-
-  if (types.length) showPtVariants(types[0]);
+  const first = types[0];
+  if (!state.ptSelectedKey || !types.some((t) => t._key === state.ptSelectedKey)) {
+    state.ptSelectedKey = first?._key ?? null;
+  }
+  const current = types.find((t) => t._key === state.ptSelectedKey);
+  if (current) showPtVariants(current);
   else els["ptype-values-table"].innerHTML = `<p class="empty-note">표시할 유형이 없습니다.</p>`;
 }
 
@@ -740,7 +884,7 @@ function showPtVariants(type) {
       { key: "포함열", label: "포함열", type: "clip", width: 140 },
       { key: "행수", label: "행수", type: "num", width: 65 },
     ],
-    { maxRows: 1000, emptyText: "이 유형의 변형 값이 없습니다." }
+    { pageSize: 500, emptyText: "이 유형의 변형 값이 없습니다." }
   );
 }
 
@@ -757,7 +901,8 @@ async function doPatternTypes() {
       dict: dictForEngine(),
       minCount: Number(els["pt-mincount"].value) || 2,
       minValues: Number(els["pt-minvalues"].value) || 1,
-      maxVariants: Number(els["pt-maxvariants"].value) || 200,
+      /* 0 = 유형당 모든 변형 값 표시(절단 없음) */
+      maxVariants: Number(els["pt-maxvariants"].value) || 0,
       onProgress: (p, msg) => setStatus(msg, p),
     });
     state.ptResult = r;
@@ -843,25 +988,24 @@ async function loadHistory() {
       els["history-table"],
       items,
       [
-        { key: "created_at", label: "시각", type: "html", width: 130 },
+        {
+          key: "created_at",
+          label: "시각",
+          width: 130,
+          render: (row) => UI.escapeHtml(fmtDate(row.created_at)),
+        },
         { key: "file_name", label: "파일", type: "clip", width: 200 },
         { key: "sheet", label: "시트", width: 100 },
         { key: "row_count", label: "행수", type: "num", width: 70 },
         { key: "label", label: "메모", type: "clip" },
         { key: "storage_mode", label: "모드", width: 60 },
-      ].map((c) => (c.key === "created_at" ? { ...c, type: "text" } : c)).map((c) => c),
+      ],
       {
-        maxRows: 500,
+        pageSize: 200,
         emptyText: "저장된 이력이 없습니다.",
         onRowClick: (row) => showHistoryDetail(row.id),
       }
     );
-    /* 시각 포맷팅 */
-    const trs = els["history-table"].querySelectorAll("tbody tr");
-    trs.forEach((tr, i) => {
-      const td = tr.children[0];
-      if (td) td.textContent = fmtDate(items[i]?.created_at);
-    });
   } catch (e) {
     els["history-info"].textContent = "이력 조회 실패";
     els["history-table"].innerHTML = `<p class="empty-note">${escapeHtml(e.message)}</p>`;
@@ -1010,6 +1154,17 @@ function bindEvents() {
   els["findings-search"].addEventListener("input", UI.debounce(renderFindings, 250));
   els["findings-method"].addEventListener("change", renderFindings);
   els["findings-mask"].addEventListener("change", renderFindings);
+
+  /* 단어 빈도 → 제외 단어 */
+  els["btn-words-exclude-sel"].addEventListener("click", () => {
+    const checked = $$("#words-table .word-chk:checked").map((c) => c.dataset.word);
+    if (!checked.length) return toast("제외할 단어를 먼저 체크하세요.", "err");
+    excludeWords(checked);
+  });
+  els["btn-words-clear-sel"].addEventListener("click", () => {
+    $$("#words-table .word-chk").forEach((c) => (c.checked = false));
+  });
+  els["btn-words-undo"].addEventListener("click", undoExcludes);
 
   $("#btn-words-csv").addEventListener("click", () => {
     if (!state.result) return;
