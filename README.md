@@ -78,23 +78,81 @@
 
 ---
 
-## 5. 로컬 개발
+## 5. 로컬에서 실행하기
 
+### 5.1 사전 준비
+- **Node.js 20 LTS 이상** (권장 22) — `node -v` 로 확인
+- **Git** — `git --version` 으로 확인
+- 별도 DB 서버 설치 **불필요** (Cloudflare D1은 로컬 SQLite 파일로 자동 생성)
+
+### 5.2 설치 (Windows / macOS / Linux 공통)
 ```bash
-npm run build
-npx wrangler pages dev dist --d1=DB --local --ip 0.0.0.0 --port 3000
-# 또는
-pm2 start ecosystem.config.cjs
+git clone https://github.com/choimyungsu/prompt_security.git
+cd prompt_security
+npm install
 ```
 
-### 테스트
+### 5.3 실행 방법 A — 개발 모드 (권장, 수정 시 자동 반영)
+```bash
+npm run dev
+```
+→ 브라우저에서 **http://localhost:5173** 접속 (Vite 기본 포트)
+
+### 5.4 실행 방법 B — 실제 배포 환경과 동일하게 (Cloudflare 런타임 + D1)
+```bash
+npm run build                                   # dist/_worker.js 생성
+npx wrangler pages dev dist --d1=DB --local --ip 0.0.0.0 --port 3000
+```
+→ 브라우저에서 **http://localhost:3000** 접속
+
+> Windows PowerShell에서 `--ip 0.0.0.0` 접근이 막히면 `--ip 127.0.0.1` 로 바꾸세요.
+
+### 5.5 실행 방법 C — 백그라운드 상시 실행 (PM2)
+```bash
+npm run build
+npx pm2 start ecosystem.config.cjs
+npx pm2 logs webapp          # 로그 확인 (Ctrl+C 로 빠져나옴, 서버는 계속 실행)
+npx pm2 restart webapp       # 코드 수정 후 재시작
+npx pm2 delete webapp        # 종료
+```
+
+### 5.6 정상 기동 확인
+```bash
+curl http://localhost:3000/api/health
+```
+정상 응답 예시 (`schemaOk: true` 이고 사전 건수가 채워져 있으면 성공):
+```json
+{"ok":true,"dbBound":true,"dbOk":true,"schemaOk":true,
+ "counts":{"stopword":64,"security":48,"pattern":8,"pattern_type":15,"_runs":0}}
+```
+
+### 5.7 최초 실행 시 D1 스키마
+- **자동 생성됩니다.** 첫 요청 시 `/api/health` 가 스키마를 만들고 기본 사전 4종(stopword 64 / security 48 / pattern 8 / pattern_type 15)을 1회만 시드합니다.
+- 수동으로 다시 만들고 싶을 때:
+```bash
+npx wrangler d1 execute DB --local --command="SELECT name FROM sqlite_master WHERE type='table'"
+# 스키마부터 전부 초기화
+rm -rf .wrangler/state/v3/d1
+```
+- 로컬 DB 파일 위치: `.wrangler/state/v3/d1/` (삭제해도 무방, 다음 실행 시 재생성)
+
+### 5.8 자주 발생하는 문제
+| 증상 | 원인 / 해결 |
+|---|---|
+| `ERESOLVE could not resolve` | Node가 오래된 상태이거나 lock 파일 없이 설치. `npm install` 재실행, 그래도 실패 시 `npm install --legacy-peer-deps` |
+| `Port 3000 is in use` | 다른 프로세스가 사용 중. `--port 3100` 처럼 포트 변경 |
+| 화면은 뜨는데 "DB 연결 안 됨" | `--d1=DB --local` 옵션 누락. 위 명령 그대로 재실행 |
+| 사전이 전부 비어 보임 | 브라우저 개발자도구 → Application → Local Storage 삭제 후 새로고침 (자동 복구 로직 있음) |
+| Excel 업로드가 안 됨 | SheetJS CDN 차단 환경. 오프라인이면 CSV로 진행 |
+
+### 5.9 테스트
 ```bash
 node tests/engine.test.mjs   # 분석 엔진 34개 (로직 정합성)
 node tests/export.test.mjs   # Excel 생성 27개 (12시트/제약처리)
 ```
-> 브라우저 통합 테스트: `tests/selftest.html` (개발 서버의 `/static/`에 복사해 실행)
 
 **검증 결과: 엔진 34/34 · Excel 27/27 · 브라우저 통합 31/31 통과**
+**새 클론 검증: `git clone → npm install → npm run build → wrangler pages dev` 전 구간 성공 (2026-11-27)**
 
 ---
 
