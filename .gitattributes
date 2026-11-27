@@ -1,0 +1,34 @@
+# ============================================================
+#  줄바꿈(EOL) 자동 정규화
+#
+#  Windows cmd.exe 는 .bat/.cmd 를 CRLF 로 읽어야 한다.
+#  LF 로 체크아웃되면 라벨(:LABEL)·GOTO 파싱이 깨져
+#  "'t'은(는) 내부 또는 외부 명령..." 같은 오류가 발생한다.
+# ============================================================
+
+# 배치 파일은 항상 CRLF 로 체크아웃
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# 나머지 소스는 LF (Linux/macOS/CI 및 Cloudflare 빌드 환경)
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.jsonc text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# 바이너리 (변환 금지)
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.xlsx  binary
+*.zip   binary
