@@ -3,12 +3,12 @@
 데스크톱 앱(`main.py` v1.2.0, PySide6)의 **모든 분석 기능을 그대로** 웹으로 옮긴 시스템입니다.
 추가로 ① **DB 저장 / 미저장 선택**, ② **DB 설정 화면**, ③ **예외 단어(사전) 관리 고도화** 를 적용했습니다.
 
-- **기술 스택**: Hono + TypeScript · 프론트는 바닐라 JS 모듈 + CDN(Tailwind, SheetJS)
-- **DB (2가지 런타임 지원)**
-  - **로컬 실행** = Node.js + **MySQL**(`mysql2`) — `start.bat` / `npm run start:local`
-  - **클라우드 배포** = Cloudflare Pages/Workers + **D1**(SQLite) — `npm run build && npm run deploy`
-  - SQL 실행 계층만 추상화(`SqlDb`)해서 **같은 API 코드가 양쪽에서 동작**합니다.
-- **핵심 설계**: 원본 데이터(개인정보 포함 가능)는 **브라우저 밖으로 나가지 않습니다.** 분석 엔진 전체를 브라우저에서 실행하고, 서버(MySQL/D1)는 **사전·설정·이력 메타데이터**만 보관합니다.
+- **기술 스택**: Hono + TypeScript · 프론트는 바닐라 JS 모듈 + 자체 CSS
+- **DB**: **로컬 MySQL**(`mysql2`) — `start.bat` / `npm run start:local`
+  - SQL 실행 계층(`SqlDb`)을 추상화해 두었고, 필요하면 D1(SQLite) 드라이버도 그대로 끼울 수 있습니다.
+- **완전 오프라인 동작**: **외부 CDN 의존 0건.** Tailwind·SheetJS 등 모든 자산이 저장소에 포함되어 있어
+  **인터넷이 없는 폐쇄망에서도 그대로 실행**됩니다.
+- **핵심 설계**: 원본 데이터(개인정보 포함 가능)는 **브라우저 밖으로 나가지 않습니다.** 분석 엔진 전체를 브라우저에서 실행하고, 서버(MySQL)는 **사전·설정·이력 메타데이터**만 보관합니다.
 
 ---
 
@@ -198,67 +198,86 @@ curl http://localhost:3000/api/health
 | `[안내] DB 초기화에 실패했습니다` | DB 생성 권한 없음. 5.2 의 관리자 SQL 을 먼저 실행 |
 | `Port 3000 is in use` | `.env` 의 `PORT` 를 `3100` 등으로 변경 |
 | 사전이 전부 비어 보임 | 브라우저 개발자도구 → Application → Local Storage 삭제 후 새로고침 |
-| Excel 업로드가 안 됨 | SheetJS CDN 차단 환경. 오프라인이면 CSV로 진행 |
+| Excel 업로드/저장이 안 됨 | `/static/vendor/xlsx.full.min.js` 가 200으로 서빙되는지 확인 (외부 CDN 불필요) |
 
-### 5.9 (대안) Cloudflare 런타임으로 로컬 실행 — D1 사용
-MySQL 없이 배포 환경과 동일하게 띄우려면:
-```bash
+### 5.9 오프라인(폐쇄망) 환경에서 사용
+
+**외부 인터넷 연결이 없어도 그대로 동작합니다.** 확인된 외부 의존은 0건입니다.
+
+| 자산 | 이전 | 현재 |
+|---|---|---|
+| CSS | `cdn.tailwindcss.com` | 자체 `static/style.css` |
+| Excel | `cdn.jsdelivr.net/npm/xlsx` | 저장소 내 `static/vendor/xlsx.full.min.js` |
+
+폐쇄망 반입 절차:
+```bat
+:: 인터넷 되는 PC 에서
+npm install
 npm run build
-npx wrangler pages dev dist --d1=DB --local --ip 0.0.0.0 --port 3000
+
+:: 아래 폴더를 통째로 압축해 반입
+::   node_modules\ , scripts\ , src\ , public\ , package.json , .env.example , start.bat
 ```
-- D1은 `.wrangler/state/v3/d1/` 에 SQLite 파일로 자동 생성되며, 첫 요청 시 스키마·기본 사전이 자동 준비됩니다.
-- 스키마부터 초기화: `rm -rf .wrangler/state/v3/d1`
+반입한 PC 에서 `.env` 를 만들고 `start.bat` 을 실행하면 됩니다. (`npm install` 불필요)
+
+> 브라우저는 로컬 서버(`http://localhost:3000`)에만 접속하고, 분석은 전부 브라우저 안에서 수행됩니다.
+> 원본 데이터는 서버로 전송되지 않습니다.
 
 ### 5.10 테스트
 ```bash
 node tests/engine.test.mjs   # 분석 엔진 34개 (로직 정합성)
 node tests/export.test.mjs   # Excel 생성 27개 (12시트/제약처리)
+node tests/api.test.mjs      # API 통합 63개 (실행 중인 서버 필요)
 ```
 
 **검증 결과 (2026-11-27)**
 - 엔진 **34/34** · Excel **27/27** · 브라우저 통합 **31/31**
-- **MySQL 백엔드 API 통합 51/51** (health·사전 CRUD·upsert 중복·정규식 검증·bulk·이력·정리·백업·초기화 3종)
+- **MySQL API 통합 63/63** (health·사전 CRUD·upsert·정규식 검증·bulk·이력·정리·백업·초기화 3종)
 - **D1 경로 회귀 검증 통과** (`dbKind:"sqlite"`, 사전 4종 시드 유지)
+- **오프라인 검증**: 페이지 HTML 내 외부 URL 0건, 벤더 자산 로컬 서빙 200
 
 ---
 
 ## 6. 미구현 / 다음 단계
 
-- [ ] **Cloudflare 배포** — 배포 경로 선택 필요(아래 안내)
 - [ ] MySQL 접속 정보를 UI에서 입력하는 화면 (현재는 `.env` 파일로만 설정)
 - [ ] MySQL SSL/TLS 접속 옵션 (원격 DB 사용 시)
+- [ ] 사용자 계정/접근 제어 (현재는 `localhost` 단일 사용 전제)
 - [ ] 대용량(수십만 행) 파일용 Web Worker 이관 (현재는 UI 양보 방식으로 진행률 표시)
 - [ ] 이력 비교 대시보드(회차 간 신규 탐지 항목 diff)
 - [ ] 사전 버전 관리(변경 이력 롤백)
-- [ ] 인증 기반 접근 제어(현재 공개 접근)
 
-## 7. 실행/배포 상태
+> **클라우드 배포는 범위에서 제외했습니다.** 로컬 MySQL 기반 자체 분석 용도로 확정.
+> 다만 SQL 실행 계층이 방언 중립(`SqlDb`)이라, 나중에 필요해지면 D1 드라이버를 그대로 끼워 배포할 수 있습니다.
+
+## 7. 실행 상태
 
 | 구분 | DB | 상태 |
 |---|---|---|
-| 로컬 실행 (Windows · `start.bat`) | **MySQL** | ✅ 검증 완료 (API 통합 51/51) |
-| 로컬 실행 (Cloudflare 런타임) | D1 (로컬 SQLite) | ✅ 검증 완료 |
-| 클라우드 배포 | D1 (Cloudflare) | ❌ 미배포 — 배포 경로 선택 필요 |
+| 로컬 실행 (Windows · `start.bat`) | **MySQL** | ✅ 검증 완료 (API 통합 63/63) |
+| 오프라인 / 폐쇄망 | **MySQL** | ✅ 검증 완료 (외부 CDN 0건) |
+| 클라우드 배포 | — | ⛔ 범위 제외 (로컬 전용 운영) |
 
-> **왜 로컬은 MySQL, 배포는 D1인가?**
-> Cloudflare Workers 런타임은 TCP 소켓을 열 수 없어 MySQL에 직접 접속할 수 없습니다.
-> 그래서 SQL 실행 계층(`src/lib/dbtypes.ts` 의 `SqlDb`)만 추상화해
-> **로컬은 `mysql2`(MySQL), 배포는 D1** 드라이버를 끼우는 구조로 만들었습니다.
-> API·사업 로직은 `src/routes/api.ts` 한 벌로 양쪽에서 동일하게 동작합니다.
+**운영 전제**
+- 서버는 `localhost` 에서만 사용하는 단일 사용자 환경을 전제로 합니다.
+- 원본 분석 대상 데이터는 **브라우저 밖으로 전송되지 않습니다.** DB에는 사전·설정·이력 메타데이터만 저장됩니다.
 
-**파일 구성 (DB 관련)**
+**파일 구성**
 
 ```
 src/lib/dbtypes.ts        SqlDb 인터페이스 (방언 중립)
-src/lib/d1adapter.ts      D1 → SqlDb 어댑터 (배포용)
-src/lib/mysqladapter.ts   MySQL → SqlDb 어댑터 (로컬용)
+src/lib/mysqladapter.ts   MySQL → SqlDb 어댑터 (로컬 실행용)
+src/lib/d1adapter.ts      D1 → SqlDb 어댑터 (미사용, 확장 대비)
 src/lib/db.ts             스키마·시드·설정 (방언별 SQL 자동 분기)
+src/lib/loadEnv.ts        .env 로더 (Node 버전 무관)
 src/routes/api.ts         REST API (DB 종류 무관)
-src/index.tsx             Cloudflare 진입점 (D1)
-src/server/node.ts        로컬 진입점 (MySQL)
+src/server/node.ts        로컬 진입점 (Node + MySQL)
 scripts/db-setup.ts       MySQL DB/테이블/시드 초기화
-start.bat                 Windows 원클릭 실행
+scripts/launch.mjs        start.bat 이 호출하는 런처 (한글 안내 출력)
+public/static/vendor/     SheetJS 로컬 번들 (오프라인용)
+start.bat                 Windows 원클릭 실행 (ASCII + CRLF)
 .env.example              접속 정보 템플릿
+tests/                    엔진 34 · Excel 27 · API 63
 ```
 
 - **마지막 업데이트**: 2026-11-27

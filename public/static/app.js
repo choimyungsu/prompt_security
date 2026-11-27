@@ -98,7 +98,8 @@ function loadSheetJS() {
   if (window.XLSX) return Promise.resolve(window.XLSX);
   return new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    /* 외부 CDN 대신 로컬 번들 사용 — 오프라인/폐쇄망에서도 동작 */
+    s.src = "/static/vendor/xlsx.full.min.js";
     s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error("Excel 라이브러리 로드 실패")));
     s.onerror = () => reject(new Error("Excel 라이브러리를 불러오지 못했습니다."));
     document.head.appendChild(s);

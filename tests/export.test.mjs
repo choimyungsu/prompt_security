@@ -2,8 +2,35 @@ import { buildWorkbook, splitLongColumns, scrub } from '../public/static/export.
 import { analyze, buildExportSheets } from '../public/static/engine.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const XLSX = require('/tmp/xlsx.full.min.js');
+const { fileURLToPath } = require('url');
+const { dirname, resolve } = require('path');
 const fs = require('fs');
+const vm = require('vm');
+
+/*
+ * 저장소에 포함된 SheetJS 브라우저 번들을 로드한다 (외부 CDN 의존 없음).
+ * 이 패키지는 "type":"module" 이라 .js 를 require 하면 ESM 으로 해석되어
+ * exports 가 비어버린다. 그래서 브라우저와 동일하게 샌드박스에서 실행해
+ * 전역 XLSX 를 얻는다.
+ *
+ * 주의: 샌드박스에 module/exports 를 넣으면 UMD 번들이 CJS 분기를 타면서
+ *       utils(XLSX.utils) 가 빠진 채로 반환된다. 전역만 주어야 정상이다.
+ */
+const HERE = dirname(fileURLToPath(import.meta.url));
+const VENDOR = resolve(HERE, '../public/static/vendor/xlsx.full.min.js');
+function loadXLSX() {
+  const sandbox = { console };
+  sandbox.global = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(VENDOR, 'utf8'), sandbox);
+  return sandbox.XLSX || null;
+}
+const XLSX = loadXLSX();
+if (!XLSX || typeof XLSX.utils?.book_new !== 'function') {
+  console.error('[준비 실패] 로컬 xlsx 번들을 로드하지 못했습니다:', VENDOR);
+  process.exit(1);
+}
 
 let pass = 0, fail = 0;
 const ok = (n, c, e='') => c ? (pass++, console.log('  ✓', n)) : (fail++, console.log('  ✗', n, e));

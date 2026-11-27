@@ -8,7 +8,7 @@ export function renderPage(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Security Word Analyzer · Web v${APP_VERSION}</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%90%3C/text%3E%3C/svg%3E" />
-<script src="https://cdn.tailwindcss.com"></script>
+<!-- 외부 CDN 미사용: 모든 스타일은 /static/style.css 에 직접 정의되어 있습니다 (오프라인 동작) -->
 <link rel="stylesheet" href="/static/style.css" />
 <script src="/static/app.js" type="module"></script>
 </head>

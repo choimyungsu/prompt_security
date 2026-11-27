@@ -4,7 +4,8 @@
  * ========================================================================== */
 import { downloadBlob, downloadCSV, toast } from "./ui.js";
 
-const XLSX_CDN = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+/* 외부 CDN 대신 로컬 번들 사용 — 오프라인/폐쇄망에서도 동작 */
+const XLSX_URL = "/static/vendor/xlsx.full.min.js";
 
 /** SheetJS 를 필요할 때만 로드 (초기 로딩 속도 유지) */
 let xlsxPromise = null;
@@ -13,9 +14,10 @@ function loadXLSX() {
   if (xlsxPromise) return xlsxPromise;
   xlsxPromise = new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = XLSX_CDN;
+    s.src = XLSX_URL;
     s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error("XLSX 로드 실패")));
-    s.onerror = () => reject(new Error("Excel 라이브러리를 불러오지 못했습니다. 네트워크를 확인하세요."));
+    s.onerror = () =>
+      reject(new Error("Excel 라이브러리를 불러오지 못했습니다. (/static/vendor/xlsx.full.min.js)"));
     document.head.appendChild(s);
   });
   return xlsxPromise;
