@@ -13,13 +13,10 @@ import { Hono } from 'hono'
 import api from '../routes/api'
 import { renderPage } from '../lib/page'
 import { createMysqlDb, mysqlConfigFromEnv } from '../lib/mysqladapter'
+import { loadEnv } from '../lib/loadEnv'
 
-/* .env 자동 로드 (Node 20.12+ / 21.7+) */
-try {
-  ;(process as any).loadEnvFile?.('.env')
-} catch {
-  /* .env 가 없으면 OS 환경변수를 그대로 사용한다 */
-}
+/* .env 자동 로드 — Node 버전과 무관하게 동작한다 */
+loadEnv('.env')
 
 const cfg = mysqlConfigFromEnv(process.env as Record<string, string | undefined>)
 

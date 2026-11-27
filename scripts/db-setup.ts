@@ -14,12 +14,10 @@
 import mysql from 'mysql2/promise'
 import { ensureSchema, schemaStatements, seedDefaults, TABLES } from '../src/lib/db'
 import { createMysqlDb, mysqlConfigFromEnv } from '../src/lib/mysqladapter'
+import { loadEnv } from '../src/lib/loadEnv'
 
-try {
-  ;(process as any).loadEnvFile?.('.env')
-} catch {
-  /* .env 없으면 환경변수 사용 */
-}
+/* .env 자동 로드 — Node 버전과 무관하게 동작한다 */
+loadEnv('.env')
 
 const cfg = mysqlConfigFromEnv(process.env as Record<string, string | undefined>)
 const log = (s: string) => console.log(s)
@@ -53,9 +51,9 @@ try {
     log('')
     log('  계정에 DB 생성 권한이 없습니다. MySQL 관리자(root)로 아래를 한 번 실행하세요:')
     log('  ------------------------------------------------------------')
-    log(`  CREATE DATABASE IF NOT EXISTS \\\`${cfg.database}\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`)
-    log(`  CREATE USER IF NOT EXISTS '${cfg.user}'@'localhost' IDENTIFIED BY '<비밀번호>';`)
-    log(`  GRANT ALL PRIVILEGES ON \\\`${cfg.database}\\\`.* TO '${cfg.user}'@'localhost';`)
+    log(`  CREATE DATABASE IF NOT EXISTS \`${cfg.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`)
+    log(`  CREATE USER IF NOT EXISTS '${cfg.user}'@'localhost' IDENTIFIED BY '<password>';`)
+    log(`  GRANT ALL PRIVILEGES ON \`${cfg.database}\`.* TO '${cfg.user}'@'localhost';`)
     log('  FLUSH PRIVILEGES;')
     log('  ------------------------------------------------------------')
     log('  그 뒤 다시 `npm run db:setup` 을 실행하세요.')
