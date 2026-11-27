@@ -1,42 +1,69 @@
 import { Hono } from 'hono'
 import {
   DICT_KINDS,
+  col,
   ensureSchema,
   getSettings,
+  insertIgnoreDictSql,
   isValidRegex,
+  listTables,
+  nowFn,
+  orderByCreatedDesc,
   pruneHistory,
-  SCHEMA_STATEMENTS,
+  schemaStatements,
   seedDefaults,
   setSetting,
-  getSettings as readSettings,
+  TABLES,
+  upsertDictSql,
   type DictKind,
 } from '../lib/db'
+import { isSqlDb, type SqlDb } from '../lib/dbtypes'
+import { createD1Db } from '../lib/d1adapter'
 
-type Bindings = { DB?: D1Database }
+type Bindings = { DB?: unknown }
 
 const api = new Hono<{ Bindings: Bindings }>()
 
 /* -------------------------------------------------------------------------- */
-/* 공통 헬퍼                                                                   */
+/* DB 해석 — D1 바인딩 / 이미 만들어진 SqlDb(로컬 MySQL) 둘 다 지원            */
 /* -------------------------------------------------------------------------- */
+const wrapping = new WeakMap<object, SqlDb>()
+
+function resolveDb(env: any): SqlDb | null {
+  const raw = env?.DB
+  if (!raw) return null
+  if (isSqlDb(raw)) return raw
+  /* Cloudflare D1Database */
+  if (typeof raw.prepare === 'function') {
+    let w = wrapping.get(raw)
+    if (!w) {
+      w = createD1Db(raw as D1Database)
+      wrapping.set(raw, w)
+    }
+    return w
+  }
+  return null
+}
+
 function noDb(c: any) {
   return c.json(
     {
       ok: false,
       error: 'no_database',
       message:
-        'D1 데이터베이스가 연결되지 않았습니다. DB 설정 화면에서 연결 상태를 확인하거나, ' +
+        'DB 가 연결되지 않았습니다. DB 설정 화면에서 연결 상태를 확인하거나, ' +
         "'로컬 모드(DB 미사용)'로 전환해 주세요.",
     },
     503
   )
 }
 
-async function requireDb(c: any): Promise<D1Database | null> {
-  if (!c.env?.DB) return null
+async function requireDb(c: any): Promise<SqlDb | null> {
+  const db = resolveDb(c.env)
+  if (!db) return null
   try {
-    await ensureSchema(c.env.DB)
-    return c.env.DB
+    await ensureSchema(db)
+    return db
   } catch (e: any) {
     console.error('schema error', e)
     return null
@@ -53,19 +80,19 @@ function str(v: unknown): string {
 /* 상태 / 진단                                                                 */
 /* -------------------------------------------------------------------------- */
 api.get('/health', async (c) => {
-  const bound = Boolean(c.env?.DB)
+  const db = resolveDb(c.env)
+  const bound = Boolean(db)
   let dbOk = false
   let schemaOk = false
   const counts: Record<string, number> = {}
-  let sqliteVersion = ''
-  if (bound) {
+  let dbVersion = ''
+  let tables: string[] = []
+
+  if (db) {
     try {
-      const db = c.env!.DB!
-      const ping = await db.prepare('SELECT 1 AS ok').first<{ ok: number }>()
-      dbOk = ping?.ok === 1
+      dbOk = await db.ping()
       try {
-        const v = await db.prepare('SELECT sqlite_version() AS v').first<{ v: string }>()
-        sqliteVersion = v?.v || ''
+        dbVersion = await db.version()
       } catch {
         /* ignore */
       }
@@ -76,35 +103,34 @@ api.get('/health', async (c) => {
       } catch (e: any) {
         console.error('health ensureSchema error', String(e?.message || e))
       }
-      const t = await db
-        .prepare(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`)
-        .all<{ name: string }>()
-      const names = (t.results || []).map((r) => r.name)
-      schemaOk = ['dictionaries', 'app_settings', 'analysis_runs', 'analysis_results'].every((n) =>
-        names.includes(n)
-      )
+      tables = await listTables(db)
+      schemaOk = TABLES.every((n) => tables.includes(n))
       if (schemaOk) {
-        const g = await db
-          .prepare(`SELECT kind, COUNT(*) AS n FROM dictionaries GROUP BY kind`)
-          .all<{ kind: string; n: number }>()
+        const g = await db.all<{ kind: string; n: number }>(
+          `SELECT kind, COUNT(*) AS n FROM dictionaries GROUP BY kind`
+        )
         for (const k of DICT_KINDS) counts[k] = 0
-        for (const r of g.results || []) counts[r.kind] = r.n
-        const runs = await db
-          .prepare('SELECT COUNT(*) AS n FROM analysis_runs')
-          .first<{ n: number }>()
-        counts._runs = runs?.n ?? 0
+        for (const r of g || []) counts[r.kind] = Number(r.n)
+        const runs = await db.first<{ n: number }>('SELECT COUNT(*) AS n FROM analysis_runs')
+        counts._runs = Number(runs?.n ?? 0)
       }
     } catch (e: any) {
       console.error('health db error', String(e?.message || e))
     }
   }
+
   return c.json({
     ok: true,
     dbBound: bound,
     dbOk,
     schemaOk,
-    sqliteVersion,
-    schemaTables: ['dictionaries', 'app_settings', 'analysis_runs', 'analysis_results'],
+    /* 신규 필드 */
+    dbKind: db?.dialect ?? '',
+    dbLabel: db?.label ?? '',
+    dbVersion,
+    /* 하위 호환(기존 화면/테스트) */
+    sqliteVersion: db?.dialect === 'sqlite' ? dbVersion : '',
+    schemaTables: tables.length ? tables : TABLES,
     counts,
   })
 })
@@ -126,7 +152,12 @@ api.get('/settings', async (c) => {
   const db = await requireDb(c)
   const { DEFAULT_SETTINGS } = await import('../lib/db')
   if (!db) {
-    return c.json({ ok: true, dbBound: Boolean(c.env?.DB), dbReady: false, settings: DEFAULT_SETTINGS })
+    return c.json({
+      ok: true,
+      dbBound: Boolean(resolveDb(c.env)),
+      dbReady: false,
+      settings: DEFAULT_SETTINGS,
+    })
   }
   const settings = await getSettings(db)
   return c.json({ ok: true, dbBound: true, dbReady: true, settings })
@@ -167,10 +198,11 @@ api.post('/settings', async (c) => {
 /* DB 관리                                                                     */
 /* -------------------------------------------------------------------------- */
 api.post('/db/init', async (c) => {
-  if (!c.env?.DB) return noDb(c)
+  const db = resolveDb(c.env)
+  if (!db) return noDb(c)
   try {
-    await ensureSchema(c.env.DB)
-    return c.json({ ok: true, message: '스키마 생성/점검 완료' })
+    await ensureSchema(db)
+    return c.json({ ok: true, message: '스키마 생성/점검 완료', dbLabel: db.label })
   } catch (e: any) {
     return c.json({ ok: false, error: String(e?.message || e) }, 500)
   }
@@ -188,25 +220,27 @@ api.post('/db/seed', async (c) => {
 api.post('/db/reset', async (c) => {
   const db = await requireDb(c)
   if (!db) return noDb(c)
+  const d = db.dialect
   const body = await c.req.json<{ target?: string }>().catch(() => ({}))
   const target = body.target || 'history'
+
   if (target === 'history') {
-    await db.prepare('DELETE FROM analysis_results').run()
-    await db.prepare('DELETE FROM analysis_runs').run()
+    await db.run('DELETE FROM analysis_results')
+    await db.run('DELETE FROM analysis_runs')
     return c.json({ ok: true, message: '분석 이력을 모두 삭제했습니다.' })
   }
   if (target === 'dictionaries') {
     /* 사용자가 만든 항목만 지우고 기본값은 다시 채운다 */
-    await db.prepare(`DELETE FROM dictionaries WHERE source = 'user'`).run()
+    await db.run(`DELETE FROM dictionaries WHERE source = 'user'`)
     const inserted = await seedDefaults(db)
     return c.json({ ok: true, message: '사전을 기본값으로 되돌렸습니다.', inserted })
   }
   if (target === 'all') {
-    await db.prepare('DELETE FROM analysis_results').run()
-    await db.prepare('DELETE FROM analysis_runs').run()
-    await db.prepare('DELETE FROM dictionaries').run()
-    await db.prepare('DELETE FROM app_settings').run()
-    for (const stmt of SCHEMA_STATEMENTS) await db.prepare(stmt).run()
+    await db.run('DELETE FROM analysis_results')
+    await db.run('DELETE FROM analysis_runs')
+    await db.run('DELETE FROM dictionaries')
+    await db.run('DELETE FROM app_settings')
+    for (const stmt of schemaStatements(d)) await db.run(stmt)
     const { DEFAULT_SETTINGS } = await import('../lib/db')
     for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
       await setSetting(db, k, v)
@@ -222,22 +256,22 @@ api.post('/db/reset', async (c) => {
 api.get('/db/export', async (c) => {
   const db = await requireDb(c)
   if (!db) return noDb(c)
-  const dict = await db.prepare('SELECT * FROM dictionaries ORDER BY kind, category, value').all()
-  const settings = await db.prepare('SELECT key, value FROM app_settings').all()
-  const runs = await db
-    .prepare(
-      `SELECT id, file_name, sheet, storage_mode, row_count, column_count, summary_json, label, created_at
+  const d = db.dialect
+  const dict = await db.all('SELECT * FROM dictionaries ORDER BY kind, category, value')
+  const settings = await db.all(`SELECT ${col('key', d)} AS ${col('key', d)}, value FROM app_settings`)
+  const runs = await db.all(
+    `SELECT id, file_name, sheet, storage_mode, row_count, column_count, summary_json, label, created_at
        FROM analysis_runs ORDER BY id DESC`
-    )
-    .all()
+  )
   return c.json({
     ok: true,
+    dialect: d,
     exportedAt: new Date().toISOString(),
-    dictionaries: dict.results || [],
+    dictionaries: dict || [],
     settings: Object.fromEntries(
-      (settings.results || []).map((r: any) => [r.key, r.value])
+      (settings || []).map((r: any) => [r.key ?? r['key'], r.value])
     ),
-    runs: (runs.results || []).map((r: any) => ({ ...r, summary: safeParse(r.summary_json) })),
+    runs: (runs || []).map((r: any) => ({ ...r, summary: safeParse(r.summary_json) })),
   })
 })
 
@@ -264,11 +298,8 @@ api.get('/dict', async (c) => {
     params.push(like, like, like, like)
   }
   sql += ' ORDER BY kind, category, value LIMIT 30000'
-  const rows = await db
-    .prepare(sql)
-    .bind(...params)
-    .all()
-  return c.json({ ok: true, items: rows.results || [] })
+  const rows = await db.all(sql, params)
+  return c.json({ ok: true, items: rows || [] })
 })
 
 function validateItem(kind: DictKind, it: any): { ok: boolean; error?: string; item?: any } {
@@ -298,24 +329,13 @@ api.post('/dict', async (c) => {
   const v = validateItem(kind, body)
   if (!v.ok) return c.json({ ok: false, error: v.error }, 400)
   const { value, pattern, category, risk, note } = v.item!
-  const r = await db
-    .prepare(
-      `INSERT INTO dictionaries (kind, value, pattern, category, risk, note, source)
-       VALUES (?,?,?,?,?,?,'user')
-       ON CONFLICT(kind, value, pattern) DO UPDATE SET
-         category = excluded.category,
-         risk = excluded.risk,
-         note = CASE WHEN excluded.note = '' THEN dictionaries.note ELSE excluded.note END,
-         enabled = 1,
-         updated_at = datetime('now')`
-    )
-    .bind(kind, value, pattern, category, risk, note)
-    .run()
-  const row = await db
-    .prepare(`SELECT * FROM dictionaries WHERE kind=? AND value=? AND pattern=?`)
-    .bind(kind, value, pattern)
-    .first()
-  return c.json({ ok: true, changes: r.meta?.changes ?? 0, item: row })
+  const r = await db.run(upsertDictSql(db.dialect), [kind, value, pattern, category, risk, note])
+  const row = await db.first('SELECT * FROM dictionaries WHERE kind=? AND value=? AND pattern=?', [
+    kind,
+    value,
+    pattern,
+  ])
+  return c.json({ ok: true, changes: r.changes, item: row })
 })
 
 /** 일괄 등록(붙여넣기 / CSV 가져오기) */
@@ -345,26 +365,17 @@ api.post('/dict/bulk', async (c) => {
   }
 
   if (replace) {
-    await db.prepare('DELETE FROM dictionaries WHERE kind = ?').bind(kind).run()
+    await db.run('DELETE FROM dictionaries WHERE kind = ?', [kind])
   }
-  const stmts = prepared.map((it) =>
-    db
-      .prepare(
-        `INSERT INTO dictionaries (kind, value, pattern, category, risk, note, source)
-         VALUES (?,?,?,?,?,?,'user')
-         ON CONFLICT(kind, value, pattern) DO UPDATE SET
-           category = excluded.category,
-           risk = excluded.risk,
-           note = CASE WHEN excluded.note = '' THEN dictionaries.note ELSE excluded.note END,
-           enabled = 1,
-           updated_at = datetime('now')`
-      )
-      .bind(kind, it.value, it.pattern, it.category, it.risk, it.note)
-  )
+  const sql = upsertDictSql(db.dialect)
+  const stmts = prepared.map((it) => ({
+    sql,
+    params: [kind, it.value, it.pattern, it.category, it.risk, it.note] as unknown[],
+  }))
   let inserted = 0
   for (let i = 0; i < stmts.length; i += 40) {
     const res = await db.batch(stmts.slice(i, i + 40))
-    inserted += res.reduce((a, r) => a + (r.meta?.changes ?? 0), 0)
+    inserted += res.reduce((a, r) => a + (r.changes ?? 0), 0)
   }
   return c.json({ ok: true, inserted, skipped: items.length - prepared.length, errors })
 })
@@ -375,7 +386,7 @@ api.put('/dict/:id', async (c) => {
   const id = Number(c.req.param('id'))
   if (!Number.isFinite(id)) return c.json({ ok: false, error: 'invalid_id' }, 400)
   const body = await c.req.json<any>().catch(() => ({}))
-  const cur = await db.prepare('SELECT * FROM dictionaries WHERE id = ?').bind(id).first<any>()
+  const cur = await db.first<any>('SELECT * FROM dictionaries WHERE id = ?', [id])
   if (!cur) return c.json({ ok: false, error: 'not_found' }, 404)
 
   const sets: string[] = []
@@ -413,17 +424,14 @@ api.put('/dict/:id', async (c) => {
     params.push(body.enabled ? 1 : 0)
   }
   if (!sets.length) return c.json({ ok: false, error: 'nothing_to_update' }, 400)
-  sets.push(`source = 'user'`, `updated_at = datetime('now')`)
+  sets.push(`source = 'user'`, `updated_at = ${nowFn(db.dialect)}`)
 
   try {
-    await db
-      .prepare(`UPDATE dictionaries SET ${sets.join(', ')} WHERE id = ?`)
-      .bind(...params, id)
-      .run()
+    await db.run(`UPDATE dictionaries SET ${sets.join(', ')} WHERE id = ?`, [...params, id])
   } catch (e: any) {
     return c.json({ ok: false, error: '같은 값이 이미 있습니다.' }, 409)
   }
-  const row = await db.prepare('SELECT * FROM dictionaries WHERE id = ?').bind(id).first()
+  const row = await db.first('SELECT * FROM dictionaries WHERE id = ?', [id])
   return c.json({ ok: true, item: row })
 })
 
@@ -432,7 +440,7 @@ api.delete('/dict/:id', async (c) => {
   if (!db) return noDb(c)
   const id = Number(c.req.param('id'))
   if (!Number.isFinite(id)) return c.json({ ok: false, error: 'invalid_id' }, 400)
-  await db.prepare('DELETE FROM dictionaries WHERE id = ?').bind(id).run()
+  await db.run('DELETE FROM dictionaries WHERE id = ?', [id])
   return c.json({ ok: true })
 })
 
@@ -445,9 +453,12 @@ api.post('/dict/delete', async (c) => {
   let deleted = 0
   for (let i = 0; i < ids.length; i += 40) {
     const chunk = ids.slice(i, i + 40)
-    const stmts = chunk.map((id) => db.prepare('DELETE FROM dictionaries WHERE id = ?').bind(id))
+    const stmts = chunk.map((id) => ({
+      sql: 'DELETE FROM dictionaries WHERE id = ?',
+      params: [id] as unknown[],
+    }))
     const res = await db.batch(stmts)
-    deleted += res.reduce((a, r) => a + (r.meta?.changes ?? 0), 0)
+    deleted += res.reduce((a, r) => a + (r.changes ?? 0), 0)
   }
   return c.json({ ok: true, deleted })
 })
@@ -460,19 +471,16 @@ api.post('/dict/stopword-bulk-words', async (c) => {
   const words = (body.words || []).map((w) => String(w).trim()).filter(Boolean)
   if (!words.length) return c.json({ ok: true, inserted: 0 })
   const uniq = [...new Set(words)].slice(0, 10000)
-  const stmts = uniq.map((w) =>
-    db
-      .prepare(
-        `INSERT INTO dictionaries (kind, value, pattern, category, risk, note, source)
-         VALUES ('stopword', ?, '', '', '', '', 'user')
-         ON CONFLICT(kind, value, pattern) DO NOTHING`
-      )
-      .bind(w)
-  )
+  /* 사용자가 직접 등록한 단어이므로 source='user' — 사전 초기화 시 함께 정리된다 */
+  const sql = insertIgnoreDictSql(db.dialect, 'user')
+  const stmts = uniq.map((w) => ({
+    sql,
+    params: ['stopword', w, '', '', ''] as unknown[],
+  }))
   let inserted = 0
   for (let i = 0; i < stmts.length; i += 40) {
     const res = await db.batch(stmts.slice(i, i + 40))
-    inserted += res.reduce((a, r) => a + (r.meta?.changes ?? 0), 0)
+    inserted += res.reduce((a, r) => a + (r.changes ?? 0), 0)
   }
   return c.json({ ok: true, inserted, skipped: words.length - uniq.length })
 })
@@ -483,7 +491,7 @@ api.post('/dict/stopword-bulk-words', async (c) => {
 api.post('/runs', async (c) => {
   const db = await requireDb(c)
   if (!db) return noDb(c)
-  const s = await readSettings(db)
+  const s = await getSettings(db)
   if (s.keep_history !== '1') {
     return c.json({ ok: true, skipped: true, message: '이력 저장이 꺼져 있습니다.' })
   }
@@ -494,13 +502,11 @@ api.post('/runs', async (c) => {
   )
     ? body.results
     : []
-  const r = await db
-    .prepare(
-      `INSERT INTO analysis_runs
-        (file_name, sheet, storage_mode, row_count, column_count, columns_json, summary_json, label)
-       VALUES (?,?,?,?,?,?,?,?)`
-    )
-    .bind(
+  const r = await db.run(
+    `INSERT INTO analysis_runs
+      (file_name, sheet, storage_mode, row_count, column_count, columns_json, summary_json, label)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [
       str(run.fileName),
       str(run.sheet),
       str(run.storageMode) || 'db',
@@ -508,17 +514,17 @@ api.post('/runs', async (c) => {
       Number(run.columnCount || 0),
       JSON.stringify(run.columns || []),
       JSON.stringify(run.summary || {}),
-      str(run.label)
-    )
-    .run()
-  const runId = r.meta?.last_row_id
+      str(run.label),
+    ]
+  )
+  const runId = r.lastRowId
   let savedResults = 0
   if (s.persist_results === '1' && runId) {
     for (const item of results) {
-      await db
-        .prepare(`INSERT INTO analysis_results (run_id, kind, payload_json, row_total) VALUES (?,?,?,?)`)
-        .bind(runId, str(item.kind), JSON.stringify(item.payload ?? null), Number(item.rowTotal || 0))
-        .run()
+      await db.run(
+        `INSERT INTO analysis_results (run_id, kind, payload_json, row_total) VALUES (?,?,?,?)`,
+        [runId, str(item.kind), JSON.stringify(item.payload ?? null), Number(item.rowTotal || 0)]
+      )
       savedResults++
     }
   }
@@ -530,17 +536,15 @@ api.get('/runs', async (c) => {
   const db = await requireDb(c)
   if (!db) return noDb(c)
   const limit = Math.min(500, Math.max(1, Number(c.req.query('limit') || 100)))
-  const rows = await db
-    .prepare(
-      `SELECT id, file_name, sheet, storage_mode, row_count, column_count,
-              summary_json, label, created_at
-         FROM analysis_runs ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`
-    )
-    .bind(limit)
-    .all<any>()
+  const rows = await db.all(
+    `SELECT id, file_name, sheet, storage_mode, row_count, column_count,
+            summary_json, label, created_at
+       FROM analysis_runs ORDER BY ${orderByCreatedDesc(db.dialect)} LIMIT ?`,
+    [limit]
+  )
   return c.json({
     ok: true,
-    items: (rows.results || []).map((r) => ({ ...r, summary: safeParse(r.summary_json) })),
+    items: (rows || []).map((r: any) => ({ ...r, summary: safeParse(r.summary_json) })),
   })
 })
 
@@ -548,16 +552,16 @@ api.get('/runs/:id', async (c) => {
   const db = await requireDb(c)
   if (!db) return noDb(c)
   const id = Number(c.req.param('id'))
-  const run = await db.prepare('SELECT * FROM analysis_runs WHERE id = ?').bind(id).first<any>()
+  const run = await db.first<any>('SELECT * FROM analysis_runs WHERE id = ?', [id])
   if (!run) return c.json({ ok: false, error: 'not_found' }, 404)
-  const results = await db
-    .prepare('SELECT kind, payload_json, row_total FROM analysis_results WHERE run_id = ?')
-    .bind(id)
-    .all<any>()
+  const results = await db.all(
+    'SELECT kind, payload_json, row_total FROM analysis_results WHERE run_id = ?',
+    [id]
+  )
   return c.json({
     ok: true,
     run: { ...run, summary: safeParse(run.summary_json), columns: safeParse(run.columns_json) },
-    results: (results.results || []).map((r) => ({
+    results: (results || []).map((r: any) => ({
       kind: r.kind,
       rowTotal: r.row_total,
       payload: safeParse(r.payload_json),
@@ -569,8 +573,8 @@ api.delete('/runs/:id', async (c) => {
   const db = await requireDb(c)
   if (!db) return noDb(c)
   const id = Number(c.req.param('id'))
-  await db.prepare('DELETE FROM analysis_results WHERE run_id = ?').bind(id).run()
-  await db.prepare('DELETE FROM analysis_runs WHERE id = ?').bind(id).run()
+  await db.run('DELETE FROM analysis_results WHERE run_id = ?', [id])
+  await db.run('DELETE FROM analysis_runs WHERE id = ?', [id])
   return c.json({ ok: true })
 })
 

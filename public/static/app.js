@@ -820,7 +820,7 @@ async function doSaveDbNow() {
 async function loadHistory() {
   try {
     const items = await state.store.loadHistory();
-    els["history-info"].textContent = `${items.length.toLocaleString()}건 (${state.store.mode === "db" ? "D1" : "브라우저"})`;
+    els["history-info"].textContent = `${items.length.toLocaleString()}건 (${state.store.mode === "db" ? (state.store.healthInfo?.dbKind === "mysql" ? "MySQL" : "D1") : "브라우저"})`;
     renderTable(
       els["history-table"],
       items,

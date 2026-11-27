@@ -3,8 +3,12 @@
 데스크톱 앱(`main.py` v1.2.0, PySide6)의 **모든 분석 기능을 그대로** 웹으로 옮긴 시스템입니다.
 추가로 ① **DB 저장 / 미저장 선택**, ② **DB 설정 화면**, ③ **예외 단어(사전) 관리 고도화** 를 적용했습니다.
 
-- **기술 스택**: Hono + TypeScript + Cloudflare Pages/Workers + D1(SQLite) · 프론트는 바닐라 JS 모듈 + CDN(Tailwind, SheetJS)
-- **핵심 설계**: 원본 데이터(개인정보 포함 가능)는 **브라우저 밖으로 나가지 않습니다.** 분석 엔진 전체를 브라우저에서 실행하고, 서버(D1)는 **사전·설정·이력 메타데이터**만 보관합니다.
+- **기술 스택**: Hono + TypeScript · 프론트는 바닐라 JS 모듈 + CDN(Tailwind, SheetJS)
+- **DB (2가지 런타임 지원)**
+  - **로컬 실행** = Node.js + **MySQL**(`mysql2`) — `start.bat` / `npm run start:local`
+  - **클라우드 배포** = Cloudflare Pages/Workers + **D1**(SQLite) — `npm run build && npm run deploy`
+  - SQL 실행 계층만 추상화(`SqlDb`)해서 **같은 API 코드가 양쪽에서 동작**합니다.
+- **핵심 설계**: 원본 데이터(개인정보 포함 가능)는 **브라우저 밖으로 나가지 않습니다.** 분석 엔진 전체를 브라우저에서 실행하고, 서버(MySQL/D1)는 **사전·설정·이력 메타데이터**만 보관합니다.
 
 ---
 
@@ -56,14 +60,24 @@
 
 ---
 
-## 3. 데이터 모델 (D1)
+## 3. 데이터 모델 (MySQL / D1 공통)
+
+같은 테이블 구조를 **로컬 MySQL**과 **배포 D1** 양쪽에 동일하게 생성합니다.
 
 | 테이블 | 주요 컬럼 |
 |---|---|
 | `dictionaries` | `kind`(stopword·security·pattern·pattern_type), `value`, `pattern`, `category`, `risk`, `enabled`, `note`, `source`(default·user) — 유니크: `(kind, value, pattern)` |
 | `app_settings` | `key`, `value` — `storage_mode`, `persist_results`, `retention_limit`, `keep_history` 등 |
 | `analysis_runs` | `file_name`, `sheet`, `row_count`, `summary_json`, `created_at` |
-| `analysis_results` | `run_id`, `kind`, `payload_json` (옵션: 결과 표 보관 시) |
+| `analysis_results` | `run_id`, `kind`, `payload_json` (옵션: 결과 표 보관 시) — `run_id` FK `ON DELETE CASCADE` |
+
+**MySQL 전용 구현 차이 (자동 처리됨)**
+
+- MySQL은 `TEXT` 컬럼에 바로 UNIQUE 인덱스를 걸 수 없고, 긴 정규식은 인덱스 길이 제한(3072 byte)에 걸립니다.
+  → `pattern`의 `MD5` 앞 32자를 **생성 컬럼 `uq_pattern`** 으로 저장해 `(kind, value, uq_pattern)` 유니크 키를 만듭니다.
+  (사용자에게는 그대로 `(kind, value, pattern)` 유니크로 동작합니다)
+- `INSERT ... ON CONFLICT` → `INSERT ... ON DUPLICATE KEY UPDATE`, `INSERT OR IGNORE` → `INSERT IGNORE`,
+  `datetime('now')` → `NOW()`, `sqlite_master` → `information_schema` 로 방언별 자동 변환됩니다.
 
 ---
 
@@ -78,94 +92,173 @@
 
 ---
 
-## 5. 로컬에서 실행하기
+## 5. 로컬에서 실행하기 (Windows · MySQL)
+
+> **가장 간단한 방법: 저장소 폴더의 `start.bat` 더블클릭**
+> Node 확인 → `.env` 생성 → 패키지 설치 → MySQL 초기화 → 서버 실행을 자동으로 처리합니다.
 
 ### 5.1 사전 준비
 - **Node.js 20 LTS 이상** (권장 22) — `node -v` 로 확인
-- **Git** — `git --version` 으로 확인
-- 별도 DB 서버 설치 **불필요** (Cloudflare D1은 로컬 SQLite 파일로 자동 생성)
+- **MySQL 8.0 이상** (또는 MariaDB 10.5+) — 로컬에 설치 후 **서비스 실행 중**이어야 합니다
+- **Git** — `git --version`
 
-### 5.2 설치 (Windows / macOS / Linux 공통)
-```bash
+### 5.2 MySQL 계정 준비 (최초 1회)
+MySQL 관리자(`root`)로 접속해 아래를 실행합니다. 비밀번호는 원하는 값으로 바꾸세요.
+```sql
+CREATE DATABASE IF NOT EXISTS webapp
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'webapp'@'localhost' IDENTIFIED BY 'webapp1234';
+GRANT ALL PRIVILEGES ON webapp.* TO 'webapp'@'localhost';
+FLUSH PRIVILEGES;
+```
+> `npm run db:setup` 은 **DB 생성 권한이 있으면 자동으로 DB까지 만들어 줍니다.**
+> 권한이 없으면 위 SQL을 먼저 실행하라는 안내가 화면에 출력됩니다.
+
+### 5.3 설치
+```bat
 git clone https://github.com/choimyungsu/prompt_security.git
 cd prompt_security
 npm install
 ```
-
-### 5.3 실행 방법 A — 개발 모드 (권장, 수정 시 자동 반영)
 ```bash
-npm run dev
+# macOS / Linux 는 동일
+git clone https://github.com/choimyungsu/prompt_security.git && cd prompt_security && npm install
 ```
-→ 브라우저에서 **http://localhost:5173** 접속 (Vite 기본 포트)
 
-### 5.4 실행 방법 B — 실제 배포 환경과 동일하게 (Cloudflare 런타임 + D1)
-```bash
-npm run build                                   # dist/_worker.js 생성
-npx wrangler pages dev dist --d1=DB --local --ip 0.0.0.0 --port 3000
+### 5.4 접속 정보 설정
+`.env.example` 을 복사해 `.env` 로 저장한 뒤 본인 환경에 맞게 수정합니다.
+```bat
+copy .env.example .env
+```
+```ini
+PORT=3000
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=webapp
+MYSQL_PASSWORD=webapp1234
+MYSQL_DATABASE=webapp
+MYSQL_POOL=10
+```
+> `.env` 는 `.gitignore` 에 포함되어 있어 커밋되지 않습니다.
+
+### 5.5 DB 초기화 (테이블 생성 + 기본 사전 시드)
+```bat
+npm run db:setup
+```
+정상 출력 예시:
+```
+[1/3] 데이터베이스 확인/생성 완료: webapp
+[2/3] 테이블 준비 완료: dictionaries, app_settings, analysis_runs, analysis_results
+[3/3] 기본 사전 시드: 159건 추가
+  - pattern        8건
+  - pattern_type   15건
+  - security       48건
+  - stopword       64건
+```
+
+### 5.6 서버 실행
+```bat
+start.bat
+```
+또는 명령으로:
+```bat
+npm run start:local          :: 실행
+npm run dev:local            :: 파일 수정 시 자동 재시작
 ```
 → 브라우저에서 **http://localhost:3000** 접속
 
-> Windows PowerShell에서 `--ip 0.0.0.0` 접근이 막히면 `--ip 127.0.0.1` 로 바꾸세요.
-
-### 5.5 실행 방법 C — 백그라운드 상시 실행 (PM2)
-```bash
-npm run build
-npx pm2 start ecosystem.config.cjs
-npx pm2 logs webapp          # 로그 확인 (Ctrl+C 로 빠져나옴, 서버는 계속 실행)
-npx pm2 restart webapp       # 코드 수정 후 재시작
-npx pm2 delete webapp        # 종료
+정상 기동 시 콘솔:
+```
+==========================================
+  Security Word Analyzer (로컬 실행)
+==========================================
+  주소   : http://localhost:3000
+  DB     : MySQL 8.0.36 @127.0.0.1:3306/webapp
+  종료   : Ctrl + C
+==========================================
 ```
 
-### 5.6 정상 기동 확인
+### 5.7 정상 동작 확인
 ```bash
 curl http://localhost:3000/api/health
 ```
-정상 응답 예시 (`schemaOk: true` 이고 사전 건수가 채워져 있으면 성공):
 ```json
 {"ok":true,"dbBound":true,"dbOk":true,"schemaOk":true,
+ "dbKind":"mysql","dbLabel":"MySQL 8.0.36 @127.0.0.1:3306/webapp",
  "counts":{"stopword":64,"security":48,"pattern":8,"pattern_type":15,"_runs":0}}
 ```
-
-### 5.7 최초 실행 시 D1 스키마
-- **자동 생성됩니다.** 첫 요청 시 `/api/health` 가 스키마를 만들고 기본 사전 4종(stopword 64 / security 48 / pattern 8 / pattern_type 15)을 1회만 시드합니다.
-- 수동으로 다시 만들고 싶을 때:
-```bash
-npx wrangler d1 execute DB --local --command="SELECT name FROM sqlite_master WHERE type='table'"
-# 스키마부터 전부 초기화
-rm -rf .wrangler/state/v3/d1
-```
-- 로컬 DB 파일 위치: `.wrangler/state/v3/d1/` (삭제해도 무방, 다음 실행 시 재생성)
+`dbKind` 가 `mysql`, `schemaOk` 가 `true`, 사전 건수가 채워져 있으면 성공입니다.
 
 ### 5.8 자주 발생하는 문제
 | 증상 | 원인 / 해결 |
 |---|---|
-| `ERESOLVE could not resolve` | Node가 오래된 상태이거나 lock 파일 없이 설치. `npm install` 재실행, 그래도 실패 시 `npm install --legacy-peer-deps` |
-| `Port 3000 is in use` | 다른 프로세스가 사용 중. `--port 3100` 처럼 포트 변경 |
-| 화면은 뜨는데 "DB 연결 안 됨" | `--d1=DB --local` 옵션 누락. 위 명령 그대로 재실행 |
-| 사전이 전부 비어 보임 | 브라우저 개발자도구 → Application → Local Storage 삭제 후 새로고침 (자동 복구 로직 있음) |
+| `[DB 연결 실패] ... ECONNREFUSED` | MySQL 서비스가 꺼져 있음. MySQL 을 시작한 뒤 다시 실행 |
+| `ER_ACCESS_DENIED_ERROR` | 계정/비밀번호 불일치. `.env` 의 `MYSQL_USER`/`MYSQL_PASSWORD` 확인 |
+| `ER_BAD_DB_ERROR` | DB 없음. `npm run db:setup` 실행 (또는 5.2 SQL 실행) |
+| `[안내] DB 초기화에 실패했습니다` | DB 생성 권한 없음. 5.2 의 관리자 SQL 을 먼저 실행 |
+| `Port 3000 is in use` | `.env` 의 `PORT` 를 `3100` 등으로 변경 |
+| 사전이 전부 비어 보임 | 브라우저 개발자도구 → Application → Local Storage 삭제 후 새로고침 |
 | Excel 업로드가 안 됨 | SheetJS CDN 차단 환경. 오프라인이면 CSV로 진행 |
 
-### 5.9 테스트
+### 5.9 (대안) Cloudflare 런타임으로 로컬 실행 — D1 사용
+MySQL 없이 배포 환경과 동일하게 띄우려면:
+```bash
+npm run build
+npx wrangler pages dev dist --d1=DB --local --ip 0.0.0.0 --port 3000
+```
+- D1은 `.wrangler/state/v3/d1/` 에 SQLite 파일로 자동 생성되며, 첫 요청 시 스키마·기본 사전이 자동 준비됩니다.
+- 스키마부터 초기화: `rm -rf .wrangler/state/v3/d1`
+
+### 5.10 테스트
 ```bash
 node tests/engine.test.mjs   # 분석 엔진 34개 (로직 정합성)
 node tests/export.test.mjs   # Excel 생성 27개 (12시트/제약처리)
 ```
 
-**검증 결과: 엔진 34/34 · Excel 27/27 · 브라우저 통합 31/31 통과**
-**새 클론 검증: `git clone → npm install → npm run build → wrangler pages dev` 전 구간 성공 (2026-11-27)**
+**검증 결과 (2026-11-27)**
+- 엔진 **34/34** · Excel **27/27** · 브라우저 통합 **31/31**
+- **MySQL 백엔드 API 통합 51/51** (health·사전 CRUD·upsert 중복·정규식 검증·bulk·이력·정리·백업·초기화 3종)
+- **D1 경로 회귀 검증 통과** (`dbKind:"sqlite"`, 사전 4종 시드 유지)
 
 ---
 
 ## 6. 미구현 / 다음 단계
 
 - [ ] **Cloudflare 배포** — 배포 경로 선택 필요(아래 안내)
+- [ ] MySQL 접속 정보를 UI에서 입력하는 화면 (현재는 `.env` 파일로만 설정)
+- [ ] MySQL SSL/TLS 접속 옵션 (원격 DB 사용 시)
 - [ ] 대용량(수십만 행) 파일용 Web Worker 이관 (현재는 UI 양보 방식으로 진행률 표시)
 - [ ] 이력 비교 대시보드(회차 간 신규 탐지 항목 diff)
 - [ ] 사전 버전 관리(변경 이력 롤백)
 - [ ] 인증 기반 접근 제어(현재 공개 접근)
 
-## 7. 배포 상태
+## 7. 실행/배포 상태
 
-- **플랫폼**: Cloudflare Pages + D1 (로컬 개발 서버 검증 완료)
-- **상태**: ❌ 미배포 — 배포 방식 2가지(① 본인 Cloudflare 계정 ② Genspark 호스팅) 중 선택 필요
+| 구분 | DB | 상태 |
+|---|---|---|
+| 로컬 실행 (Windows · `start.bat`) | **MySQL** | ✅ 검증 완료 (API 통합 51/51) |
+| 로컬 실행 (Cloudflare 런타임) | D1 (로컬 SQLite) | ✅ 검증 완료 |
+| 클라우드 배포 | D1 (Cloudflare) | ❌ 미배포 — 배포 경로 선택 필요 |
+
+> **왜 로컬은 MySQL, 배포는 D1인가?**
+> Cloudflare Workers 런타임은 TCP 소켓을 열 수 없어 MySQL에 직접 접속할 수 없습니다.
+> 그래서 SQL 실행 계층(`src/lib/dbtypes.ts` 의 `SqlDb`)만 추상화해
+> **로컬은 `mysql2`(MySQL), 배포는 D1** 드라이버를 끼우는 구조로 만들었습니다.
+> API·사업 로직은 `src/routes/api.ts` 한 벌로 양쪽에서 동일하게 동작합니다.
+
+**파일 구성 (DB 관련)**
+
+```
+src/lib/dbtypes.ts        SqlDb 인터페이스 (방언 중립)
+src/lib/d1adapter.ts      D1 → SqlDb 어댑터 (배포용)
+src/lib/mysqladapter.ts   MySQL → SqlDb 어댑터 (로컬용)
+src/lib/db.ts             스키마·시드·설정 (방언별 SQL 자동 분기)
+src/routes/api.ts         REST API (DB 종류 무관)
+src/index.tsx             Cloudflare 진입점 (D1)
+src/server/node.ts        로컬 진입점 (MySQL)
+scripts/db-setup.ts       MySQL DB/테이블/시드 초기화
+start.bat                 Windows 원클릭 실행
+.env.example              접속 정보 템플릿
+```
+
 - **마지막 업데이트**: 2026-11-27

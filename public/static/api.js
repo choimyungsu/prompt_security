@@ -76,7 +76,7 @@ function lsSet(key, value) {
 /**
  * 저장소 추상화.
  * mode = 'local' → localStorage 만 사용 (서버 전송 없음)
- * mode = 'db'    → Cloudflare D1 REST API 사용
+ * mode = 'db'    → 서버 DB 사용 (로컬 실행: MySQL / 배포: Cloudflare D1)
  */
 export class Store {
   constructor() {

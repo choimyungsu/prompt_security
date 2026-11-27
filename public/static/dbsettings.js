@@ -65,11 +65,13 @@ export const initDbUI = {
     $("#db-retention").value = st.settings.retention_limit || "50";
     /* 연결 정보 */
     const h = st.healthInfo || {};
+    const isMysql = h.dbKind === "mysql";
     const rows = [
-      ["D1 바인딩(DB)", h.dbBound ? "연결됨" : "없음"],
+      [isMysql ? "DB 종류" : "D1 바인딩(DB)", h.dbBound ? (isMysql ? "MySQL (로컬)" : "연결됨") : "없음"],
       ["DB 응답", h.dbOk ? "정상" : "실패"],
       ["스키마", h.schemaOk ? "준비됨" : "필요"],
-      ["SQLite 버전", h.sqliteVersion || "-"],
+      [isMysql ? "DB 버전" : "SQLite 버전", h.dbVersion || h.sqliteVersion || "-"],
+      ["접속 대상", h.dbLabel || "-"],
       ["현재 저장 모드", mode === "db" ? "DB 저장" : "로컬(브라우저)"],
       ["이력 보관 한도", (st.settings.retention_limit || "50") + "건"],
       ["사전 건수", this.countsText(h.counts)],
@@ -122,7 +124,7 @@ export const initDbUI = {
       `<div class="hitem"><div class="hlabel">${label}</div><div class="hvalue ${state}">${value}</div></div>`;
 
     box.innerHTML = [
-      item("D1 바인딩", h.dbBound ? "연결됨" : "없음", h.dbBound ? "ok" : "bad"),
+      item(isMysql ? "MySQL 연결" : "D1 바인딩", h.dbBound ? "연결됨" : "없음", h.dbBound ? "ok" : "bad"),
       item("DB 응답", h.dbOk ? "정상" : "실패", h.dbOk ? "ok" : "bad"),
       item("스키마", h.schemaOk ? "준비됨" : "필요", h.schemaOk ? "ok" : "warn"),
       item("사전", this.countsText(h.counts), "ok"),

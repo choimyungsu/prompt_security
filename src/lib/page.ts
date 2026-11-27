@@ -108,7 +108,7 @@ export function renderPage(): string {
       <label class="radio-card">
         <input type="radio" name="storage-mode" value="db" />
         <div>
-          <span class="radio-title">DB 저장 모드 (Cloudflare D1)</span>
+          <span class="radio-title">DB 저장 모드</span>
           <span class="radio-desc">분석 요약/이력을 DB에 남겨 나중에 다시 조회할 수 있습니다. 원본 셀 값은 저장하지 않습니다.</span>
         </div>
       </label>
@@ -350,7 +350,7 @@ export function renderPage(): string {
           <input type="radio" name="db-storage-mode" value="db" />
           <div>
             <span class="radio-title">DB 저장 모드</span>
-            <span class="radio-desc">Cloudflare D1에 사전/설정/분석 이력을 저장합니다.</span>
+            <span class="radio-desc">사전/설정/분석 이력을 DB(로컬: MySQL / 배포: D1)에 저장합니다.</span>
           </div>
         </label>
       </div>
