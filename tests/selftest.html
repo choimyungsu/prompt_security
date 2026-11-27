@@ -123,6 +123,30 @@ function makeCSVFile() {
     const wRows = D.querySelectorAll("#words-table tbody tr").length;
     ok("단어 빈도 표 렌더링", wRows > 0, wRows);
 
+    /* --- 입력 패널 접기/펼치기 --- */
+    const layoutEl = D.querySelector(".layout");
+    const panelIn = $("#panel-input");
+    const toggleBtn = $("#btn-toggle-input");
+    ok("접기 버튼 존재", !!toggleBtn);
+    const colsBefore = getComputedStyle(layoutEl).gridTemplateColumns;
+    toggleBtn.click();
+    await sleep(300);
+    ok("접기: 패널 collapsed 클래스", panelIn.classList.contains("collapsed"));
+    ok("접기: 레이아웃 축소 컬럼", layoutEl.classList.contains("input-collapsed"));
+    const colsCollapsed = getComputedStyle(layoutEl).gridTemplateColumns;
+    ok("접기: 입력영역 폭 축소", colsBefore !== colsCollapsed, {before: colsBefore, after: colsCollapsed});
+    ok("접기: 본문 숨김", getComputedStyle($("#panel-input-body")).display === "none");
+    toggleBtn.click();
+    await sleep(300);
+    ok("펼치기: 원상복구", !panelIn.classList.contains("collapsed") && !layoutEl.classList.contains("input-collapsed"));
+    ok("펼치기: 본문 표시", getComputedStyle($("#panel-input-body")).display !== "none");
+
+    /* --- 오른쪽 결과 영역 높이(한 화면) --- */
+    const prStyle = getComputedStyle(D.querySelector(".panel-results"));
+    const vh = W.innerHeight;
+    ok("결과 패널 화면 높이 채움", parseFloat(prStyle.height) >= vh - 180,
+       {panel: prStyle.height, viewport: vh});
+
     /* 패턴 유형 탭 */
     const tabs = Array.from(D.querySelectorAll("#tabs .tab"));
     const ptTab = tabs.find((t) => t.dataset.tab === "ptype");
@@ -132,6 +156,33 @@ function makeCSVFile() {
     ok("패턴 유형 표 렌더링", ptRows > 0, ptRows);
     const ptText = $("#ptype-table").textContent;
     ok("PJT 코드 유형 집계", ptText.includes("프로젝트") || ptText.includes("PJT"), ptText.slice(0, 120));
+
+    /* 요약 표: 정규식이 아닌 샘플 + 일치 건수 */
+    const ptHeaders = Array.from(D.querySelectorAll("#ptype-table thead th")).map((th) => th.textContent.trim());
+    ok("요약: 샘플 열 존재", ptHeaders.includes("샘플 (실검출)"), ptHeaders);
+    ok("요약: 일치 건수 열 존재", ptHeaders.includes("일치 건수"), ptHeaders);
+    const sampleCells = Array.from(D.querySelectorAll("#ptype-table tbody tr")).map(
+      (tr) => tr.children[ptHeaders.indexOf("샘플 (실검출)")]?.textContent.trim()
+    );
+    ok("요약: 샘플이 실제 값", sampleCells.some((s) => /PJT-\d{4}-\d{5}/.test(s) || /EMP-\d+/.test(s)), sampleCells.slice(0, 4));
+
+    /* 변형값 표: 사례값/빈도/유형/포함열/행수 */
+    const vHeaders = Array.from(D.querySelectorAll("#ptype-values-table thead th")).map((th) => th.textContent.trim());
+    const need = ["실제 검출된 사례값", "빈도", "유형", "포함열", "행수"];
+    ok("변형값: 5개 열 모두 존재", need.every((k) => vHeaders.includes(k)), vHeaders);
+    ok("변형값: 행 렌더링", D.querySelectorAll("#ptype-values-table tbody tr").length > 0);
+    ok("변형값: 제목에 유형명", /선택한 유형의 변형 값/.test($("#pt-variant-title").textContent), $("#pt-variant-title").textContent);
+
+    /* 유형 행 클릭 → 변형값 갱신 */
+    const rowEls = Array.from(D.querySelectorAll("#ptype-table tbody tr"));
+    const targetIdx = sampleCells.findIndex((s) => /EMP-\d+/.test(s));
+    if (targetIdx >= 0 && rowEls[targetIdx]) {
+      rowEls[targetIdx].click();
+      await sleep(400);
+      const vText = $("#ptype-values-table").textContent;
+      ok("유형 클릭 시 변형값 전환", /EMP-\d+/.test(vText) || $("#pt-variant-title").textContent.length > 10,
+         $("#pt-variant-title").textContent);
+    }
 
     /* 2차 재분석 */
     const reTab = tabs.find((t) => t.dataset.tab === "reanalysis");

@@ -232,6 +232,7 @@ export class PatternTypeIndex {
     this.groups = new Map();
     this.MAX_VALUES = 1000;
     this.MAX_ROWS_PER_VALUE = 500;
+    this.MAX_COLS_PER_VALUE = 200;
   }
   _group(key, name, cat, risk, source, pattern) {
     let g = this.groups.get(key);
@@ -239,7 +240,7 @@ export class PatternTypeIndex {
       g = {
         key, 유형: name, 분류: cat, 위험도: risk, 탐지방식: source, 패턴: pattern,
         총출현: 0, rows: new Set(), cols: new Set(),
-        values: new Map(), valueRows: new Map(), overflow: 0,
+        values: new Map(), valueRows: new Map(), valueCols: new Map(), overflow: 0,
       };
       this.groups.set(key, g);
     }
@@ -266,30 +267,39 @@ export class PatternTypeIndex {
     let rs = g.valueRows.get(tok);
     if (!rs) { rs = new Set(); g.valueRows.set(tok, rs); }
     if (rs.size < this.MAX_ROWS_PER_VALUE) rs.add(rownum);
+    let cs = g.valueCols.get(tok);
+    if (!cs) { cs = new Set(); g.valueCols.set(tok, cs); }
+    if (cs.size < this.MAX_COLS_PER_VALUE) cs.add(String(col));
   }
   result(minCount = 2, minValues = 1, maxVariants = 200) {
     const types = [];
     const variants = {};
-    const stats = { 유형수: 0, 자동형태유형수: 0, 보관값수: 0, 누락값수: 0 };
+    const stats = { 유형수: 0, 자동형태유형수: 0, 보관값수: 0, 누락값수: 0, 총일치건수: 0 };
     for (const [key, g] of this.groups) {
       const uniq = g.values.size;
       if (g.총출현 < minCount || uniq < minValues) continue;
       const top = [...g.values.entries()].sort((a, b) => b[1] - a[1]).slice(0, maxVariants);
+      const sampleTop = top.slice(0, 3).map((v) => v[0]);
       types.push({
         유형: g.유형, 분류: g.분류, 위험도: g.위험도, 탐지방식: g.탐지방식,
         패턴: g.패턴, 고유값수: uniq, 총출현: g.총출현,
+        /* 요약 표에는 정규식 대신 실제 검출된 샘플 값을 노출한다 */
+        샘플: sampleTop[0] || "",
+        샘플들: sampleTop.join(" | "),
+        일치건수: g.총출현,
         행수: g.rows.size, 포함열: [...g.cols].sort().join(", "),
-        대표값: top.slice(0, 3).map((v) => v[0]).join(" | "),
+        대표값: sampleTop.join(" | "),
         _key: key,
       });
       variants[key] = top.map(([v, c]) => ({
-        유형: g.유형, 값: v, 빈도: c,
+        유형: g.유형, 사례값: v, 값: v, 빈도: c,
         행수: (g.valueRows.get(v) || new Set()).size,
-        포함열: [...g.cols].sort().join(", "),
+        포함열: [...(g.valueCols.get(v) || g.cols)].sort().join(", "),
       }));
       stats.유형수++;
       stats.보관값수 += uniq;
       stats.누락값수 += g.overflow;
+      stats.총일치건수 += g.총출현;
       if (g.탐지방식 === "자동형태") stats.자동형태유형수++;
     }
     types.sort((a, b) => (RISK[b.위험도] || 0) - (RISK[a.위험도] || 0)
@@ -734,7 +744,10 @@ export function buildExportSheets(state, dict) {
   sheets.push({
     name: "Pattern_Types",
     rows: (ptResult?.types || []).map((t) => {
-      const o = { ...t }; delete o._key; return o;
+      const o = { ...t };
+      delete o._key;
+      delete o.샘플들;
+      return o;
     }),
   });
   const variantRows = [];
@@ -742,7 +755,9 @@ export function buildExportSheets(state, dict) {
     for (const v of (ptResult.variants?.[t._key] || [])) {
       variantRows.push({
         유형: v.유형, 분류: t.분류, 위험도: t.위험도,
-        "정규식/형태": t.패턴, 값: v.값, 빈도: v.빈도, 행수: v.행수, 포함열: v.포함열,
+        "실제 검출된 사례값": v.사례값 ?? v.값,
+        빈도: v.빈도, 행수: v.행수, 포함열: v.포함열,
+        "정규식/형태": t.패턴, 샘플: t.샘플,
       });
     }
   }

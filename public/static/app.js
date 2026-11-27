@@ -56,6 +56,7 @@ function cacheEls() {
     "re-minlen", "re-phrasefreq", "re-particles", "re-num", "re-eng", "btn-reanalyze",
     "re-info", "re-words-table", "re-phrases-table", "pt-mincount", "pt-minvalues",
     "pt-maxvariants", "pt-auto", "btn-ptype", "pt-info", "ptype-table", "ptype-values-table",
+    "pt-variant-title", "btn-toggle-input", "panel-input", "panel-input-body",
     "history-info", "history-table", "history-detail", "db-status", "db-status-text",
   ].forEach((id) => (els[id] = document.getElementById(id)));
 }
@@ -678,11 +679,12 @@ function renderPatternTypes() {
   const st = r.stats || {};
   els["pt-info"].textContent =
     `유형 ${UI.num(st.유형수)}개 (자동형태 ${UI.num(st.자동형태유형수)}개)${autoOn ? "" : " · 자동형태 제외됨"} / ` +
-    `보관된 서로 다른 값 ${UI.num(st.보관값수)}개`;
+    `보관된 서로 다른 값 ${UI.num(st.보관값수)}개 · 총 일치 ${UI.num(st.총일치건수 ?? sumMatch(types))}건`;
 
   const display = types.map((t) => {
     const o = { ...t };
     delete o._key;
+    delete o.샘플들;
     return o;
   });
 
@@ -694,10 +696,11 @@ function renderPatternTypes() {
       { key: "분류", label: "분류", width: 90 },
       { key: "위험도", label: "위험도", type: "risk", width: 78 },
       { key: "탐지방식", label: "탐지", width: 80 },
+      /* 정규식 대신 실제 검출된 샘플 값을 표시 */
+      { key: "샘플", label: "샘플 (실검출)", type: "clip" },
+      { key: "일치건수", label: "일치 건수", type: "num", width: 82 },
       { key: "고유값수", label: "고유값", type: "num", width: 70 },
-      { key: "총출현", label: "총출현", type: "num", width: 70 },
       { key: "행수", label: "행수", type: "num", width: 65 },
-      { key: "대표값", label: "대표값", type: "clip" },
     ],
     {
       maxRows: 2000,
@@ -709,18 +712,32 @@ function renderPatternTypes() {
     }
   );
 
+  /* 첫 행을 선택 상태로 표시 */
+  const firstRow = els["ptype-table"].querySelector("tbody tr");
+  if (firstRow) firstRow.classList.add("selected");
+
   if (types.length) showPtVariants(types[0]);
+  else els["ptype-values-table"].innerHTML = `<p class="empty-note">표시할 유형이 없습니다.</p>`;
+}
+
+function sumMatch(types) {
+  return types.reduce((a, t) => a + (Number(t.일치건수 ?? t.총출현) || 0), 0);
 }
 
 function showPtVariants(type) {
   if (!type || !state.ptResult) return;
   const variants = state.ptResult.variants[type._key] || [];
+  if (els["pt-variant-title"]) {
+    els["pt-variant-title"].textContent = `선택한 유형의 변형 값 — ${type.유형} (${UI.num(variants.length)}건)`;
+  }
   renderTable(
     els["ptype-values-table"],
     variants,
     [
-      { key: "값", label: "값", type: "clip", width: 220 },
+      { key: "사례값", label: "실제 검출된 사례값", type: "clip", width: 220 },
       { key: "빈도", label: "빈도", type: "num", width: 65 },
+      { key: "유형", label: "유형", width: 140 },
+      { key: "포함열", label: "포함열", type: "clip", width: 140 },
       { key: "행수", label: "행수", type: "num", width: 65 },
     ],
     { maxRows: 1000, emptyText: "이 유형의 변형 값이 없습니다." }
@@ -1092,6 +1109,43 @@ function syncPersistWrap() {
   els["opt-persist"].checked = db && state.store?.settings?.persist_results === "1";
 }
 
+/* --------------------------------------------------------------------------
+ * 입력 패널 접기/펼치기 (선택 상태는 브라우저에 기억)
+ * ------------------------------------------------------------------------ */
+const INPUT_COLLAPSED_KEY = "swa.inputCollapsed";
+
+function setInputCollapsed(collapsed, persist = true) {
+  const wrap = els["panel-input"];
+  const layout = document.querySelector(".layout");
+  const btn = els["btn-toggle-input"];
+  if (!wrap || !layout) return;
+  wrap.classList.toggle("collapsed", collapsed);
+  layout.classList.toggle("input-collapsed", collapsed);
+  if (btn) {
+    btn.textContent = collapsed ? "▶ 펼치기" : "◀ 접기";
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btn.title = collapsed ? "입력 영역 펼치기" : "입력 영역 접기";
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(INPUT_COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch (_e) { /* 저장 불가 환경 무시 */ }
+  }
+}
+
+function initInputCollapse() {
+  let collapsed = false;
+  try {
+    collapsed = localStorage.getItem(INPUT_COLLAPSED_KEY) === "1";
+  } catch (_e) { /* noop */ }
+  setInputCollapsed(collapsed, false);
+  if (els["btn-toggle-input"]) {
+    els["btn-toggle-input"].addEventListener("click", () => {
+      setInputCollapsed(!els["panel-input"].classList.contains("collapsed"), true);
+    });
+  }
+}
+
 function updateDbBadge() {
   const el = els["db-status"];
   const t = els["db-status-text"];
@@ -1120,6 +1174,7 @@ async function boot() {
   UI.bindModals();
   initTabs();
   bindEvents();
+  initInputCollapse();
 
   const store = new Store();
   await store.init();

@@ -105,17 +105,22 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 .file-btn { display: inline-flex; align-items: center; cursor: pointer; }
 
 /* ------------------------------ layout ---------------------------------- */
+/* 화면 폭을 최대한 사용하고, 한 화면(100vh) 안에 결과가 모두 보이도록 구성 */
 .layout {
-  max-width: 1680px;
-  margin: 0 auto;
-  padding: 18px 20px 40px;
+  max-width: 100%;
+  margin: 0;
+  padding: 14px 16px 16px;
   display: grid;
-  grid-template-columns: 400px minmax(0, 1fr);
-  gap: 18px;
-  align-items: start;
+  grid-template-columns: 372px minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  min-height: calc(100vh - 74px);
 }
+/* 입력 패널을 접으면 결과 영역이 전체 폭을 차지 */
+.layout.input-collapsed { grid-template-columns: 46px minmax(0, 1fr); }
 @media (max-width: 1180px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: 1fr; min-height: 0; }
+  .layout.input-collapsed { grid-template-columns: 1fr; }
 }
 
 .panel {
@@ -125,8 +130,53 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
   padding: 18px;
   box-shadow: var(--shadow);
 }
-#panel-input { position: sticky; top: 78px; max-height: calc(100vh - 96px); overflow-y: auto; }
+
+/* ------------------------------ input panel ----------------------------- */
+#panel-input {
+  position: sticky;
+  top: 74px;
+  max-height: calc(100vh - 90px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+}
 @media (max-width: 1180px) { #panel-input { position: static; max-height: none; } }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+#btn-toggle-input { flex: 0 0 auto; }
+
+/* 접힌 상태: 헤더만 남기고 세로 막대로 축소 */
+#panel-input.collapsed {
+  overflow: hidden;
+  padding: 10px 6px;
+  min-width: 0;
+}
+#panel-input.collapsed #panel-input-body { display: none; }
+#panel-input.collapsed .panel-head {
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+  justify-content: flex-start;
+}
+#panel-input.collapsed .panel-title {
+  writing-mode: vertical-rl;
+  font-size: 12px;
+  letter-spacing: .12em;
+  color: var(--ink-soft);
+  margin-top: 4px;
+}
+@media (max-width: 1180px) {
+  #panel-input.collapsed .panel-head { flex-direction: row; align-items: center; }
+  #panel-input.collapsed .panel-title { writing-mode: horizontal-tb; letter-spacing: normal; }
+}
 
 .panel-title { font-size: 14px; color: #111827; letter-spacing: .01em; }
 .panel-title.mt { margin-top: 20px; }
@@ -272,7 +322,16 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 .status-text { font-size: 11.5px; color: var(--ink-soft); margin: 0; min-width: 120px; }
 
 /* ------------------------------ tabs ------------------------------------ */
-.panel-results { padding: 0; overflow: hidden; display: flex; flex-direction: column; min-height: 640px; }
+/* 결과 패널: 헤더/탭 아래 남는 화면 높이를 그대로 채운다 */
+.panel-results {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 460px;
+  height: calc(100vh - 104px);
+}
+@media (max-width: 1180px) { .panel-results { height: calc(100vh - 96px); } }
 .tabs {
   display: flex;
   gap: 2px;
@@ -280,6 +339,7 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
   background: #fbfcfe;
   overflow-x: auto;
   padding: 0 8px;
+  flex: 0 0 auto;
 }
 .tab {
   border: none;
@@ -295,9 +355,19 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 }
 .tab:hover { color: var(--ink); }
 .tab.active { color: var(--brand); border-bottom-color: var(--brand); background: #fff; }
-.tab-body { padding: 16px 18px 22px; flex: 1; }
+.tab-body { padding: 14px 18px 16px; flex: 1 1 auto; min-height: 0; overflow: auto; }
 .tab-pane { display: none; }
 .tab-pane.active { display: block; }
+
+/* 패턴 유형 탭: 남는 높이를 표가 나눠 갖도록 flex 구성 */
+.tab-pane[data-pane="ptype"].active { display: flex; flex-direction: column; min-height: 100%; }
+.tab-pane[data-pane="ptype"] .split { flex: 1 1 auto; min-height: 0; }
+.split-left, .split-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+#ptype-table, #ptype-values-table {
+  flex: 1 1 auto;
+  min-height: 180px;
+  max-height: calc(100vh - 292px);
+}
 
 .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .toolbar.wrap { flex-wrap: wrap; }
@@ -382,7 +452,8 @@ tr.row-interest { background: #fffbeb !important; }
 tr.row-secure { background: #fee2e2 !important; }
 
 /* ------------------------------ split ----------------------------------- */
-.split { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; }
+/* 결과 영역이 넓어진 만큼 변형값 표에 더 많은 폭을 준다 */
+.split { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; align-items: stretch; }
 @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
 
 /* history detail */

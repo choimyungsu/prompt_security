@@ -123,6 +123,7 @@ export const initDbUI = {
     const item = (label, value, state) =>
       `<div class="hitem"><div class="hlabel">${label}</div><div class="hvalue ${state}">${value}</div></div>`;
 
+    const isMysql = h.dbKind === "mysql";
     box.innerHTML = [
       item(isMysql ? "MySQL 연결" : "D1 바인딩", h.dbBound ? "연결됨" : "없음", h.dbBound ? "ok" : "bad"),
       item("DB 응답", h.dbOk ? "정상" : "실패", h.dbOk ? "ok" : "bad"),

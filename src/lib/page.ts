@@ -36,8 +36,13 @@ export function renderPage(): string {
 <main class="layout">
   <!-- ===================== 분석 조건 패널 ===================== -->
   <section class="panel" id="panel-input">
-    <h2 class="panel-title">1. 데이터 업로드</h2>
+    <div class="panel-head">
+      <h2 class="panel-title">1. 데이터 업로드</h2>
+      <button id="btn-toggle-input" class="btn btn-mini btn-ghost" type="button"
+        title="입력 영역 접기/펼치기" aria-expanded="true">◀ 접기</button>
+    </div>
 
+    <div id="panel-input-body">
     <div id="dropzone" class="dropzone">
       <input id="file-input" type="file" accept=".xlsx,.xls,.csv,.txt" hidden />
       <div class="dz-icon">📂</div>
@@ -127,6 +132,7 @@ export function renderPage(): string {
       <div class="progress"><div id="progress-bar" class="progress-bar" style="width:0%"></div></div>
       <p id="status-text" class="status-text">대기 중</p>
     </div>
+    </div><!-- /#panel-input-body -->
   </section>
 
   <!-- ===================== 결과 패널 ===================== -->
@@ -232,7 +238,7 @@ export function renderPage(): string {
             <div id="ptype-table" class="table-wrap"></div>
           </div>
           <div class="split-right">
-            <h3 class="sub-title">선택한 유형의 변형 값</h3>
+            <h3 class="sub-title" id="pt-variant-title">선택한 유형의 변형 값</h3>
             <div id="ptype-values-table" class="table-wrap"></div>
           </div>
         </div>

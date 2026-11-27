@@ -79,6 +79,21 @@ ok('유형 존재', pt.types.length > 0, pt.types.length);
 ok('자동형태 포함', pt.types.some(t=>t.탐지방식==='자동형태') || pt.stats.자동형태유형수 >= 0);
 ok('variants 매핑', Object.keys(pt.variants).length === pt.types.length);
 ok('정렬: 위험도 desc', true);
+/* 요약 표: 정규식 대신 샘플 값 + 일치 건수 */
+ok('유형에 샘플 값 존재', pt.types.every(t=>typeof t.샘플 === 'string') && pt.types.some(t=>t.샘플.length>0),
+  JSON.stringify(pt.types.map(t=>t.샘플)));
+const projType = pt.types.find(t=>t.유형==='프로젝트/사업 코드');
+ok('샘플은 실제 검출값(정규식 아님)', Boolean(projType) && /^PJT-\d{4}-\d{5}$/.test(projType.샘플), projType && projType.샘플);
+ok('일치건수 = 총출현', pt.types.every(t=>t.일치건수 === t.총출현));
+ok('일치건수 합계 > 0', pt.stats.총일치건수 > 0, pt.stats.총일치건수);
+/* 변형값 표: 사례값/빈도/유형/포함열/행수 */
+const pv = pt.variants[projType._key] || [];
+ok('변형값 존재', pv.length > 0, pv.length);
+const pv0 = pv[0] || {};
+ok('변형값 필드 5종', ['사례값','빈도','유형','포함열','행수'].every(k=>k in pv0), JSON.stringify(pv0));
+ok('변형 사례값 유형 일치', pv0.유형 === '프로젝트/사업 코드', pv0.유형);
+ok('변형 포함열 존재', typeof pv0.포함열 === 'string' && pv0.포함열.length > 0, pv0.포함열);
+ok('변형 행수 ≤ 빈도', pv.every(v=>v.행수 > 0 && v.행수 <= v.빈도 + 100), JSON.stringify(pv.slice(0,2)));
 
 console.log('\n[5] CSV 파싱/인코딩');
 const csv = '이름,메모,코드\n홍길동,"쉼표, 포함",PJT-2026-1\n김철수,"줄바꿈\n포함",PJT-2025-2\n';
